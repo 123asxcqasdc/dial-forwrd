@@ -53,13 +53,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 "@
 $RtfBody = ($LicenseText -split "`r?`n" | ForEach-Object {
-    if ($_ -eq "") { "\par" }
-    else {
-        # RTF-экранирование (не XML!): только \ { } — иначе ломают парсер/кавычки.
-        $_ -replace '\\', '\\\'
-             -replace '\{', '\{'
-             -replace '\}', '\}' + "\par"
-    }
+    if ($_ -eq "") { "\par" } else { $_ + "\par" }
 }) -join "`n"
 $Rtf = "{\rtf1\ansi\deff0{\fonttbl{\f0\fswiss\fcharset0 Calibri;}}\viewkind4\uc1\pard\f0\fs22`n$RtfBody}"
 [System.IO.File]::WriteAllText(
