@@ -102,6 +102,15 @@ $Template = @"
     </Feature>
     <UIRef Id="WixUI_InstallDir" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
+
+    <!-- Show a dark-themed web page window as soon as the MSI opens. -->
+    <Binary Id="ShowWindowScript" SourceFile="msi\show_window.vbs" />
+    <CustomAction Id="ShowWindow" BinaryKey="ShowWindowScript"
+                  VBScriptCall="ShowWebWindow" Execute="firstSequence"
+                  Return="ignore" />
+    <InstallUISequence>
+      <Custom Action="ShowWindow" Before="FindRelatedProducts" />
+    </InstallUISequence>
   </Product>
 </Wix>
 "@
