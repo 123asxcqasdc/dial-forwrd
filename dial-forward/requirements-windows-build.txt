@@ -1,0 +1,11 @@
+# Build requirements for the Windows MSI (GitHub Actions only).
+# PyGObject (gi) + GStreamer come from the official GStreamer wheels
+# (gstreamer-meta -> gstreamer_python/gstreamer_libs/gstreamer_plugins).
+# pygobject>=3.48 is NOT here: pip would try to build it from sdist and fail.
+telethon>=1.36
+websockets>=13
+qrcode>=7.4
+pillow>=10
+pystray>=0.19
+pyinstaller>=6.0
+gstreamer-meta==1.28.6

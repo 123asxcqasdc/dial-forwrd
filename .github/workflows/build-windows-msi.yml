@@ -1,0 +1,89 @@
+name: build-windows-msi
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'dial-forward/client/**'
+      - 'dial-forward/relay/**'
+      - 'dial-forward/launcher.py'
+      - 'dial-forward/VERSION'
+      - 'dial-forward/msi/**'
+      - 'dial-forward/pyinstaller/**'
+      - 'dial-forward/requirements.txt'
+      - 'dial-forward/requirements-windows-build.txt'
+      - '.github/workflows/build-windows-msi.yml'
+  workflow_dispatch:
+
+jobs:
+  msi:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install build deps + GStreamer wheels
+        working-directory: dial-forward
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-windows-build.txt
+
+      - name: Bundle with PyInstaller
+        working-directory: dial-forward/pyinstaller
+        run: python -m PyInstaller --noconfirm --clean DialForward.spec
+
+      - name: Report bundle size breakdown
+        working-directory: dial-forward/pyinstaller/dist/DialForward
+        shell: pwsh
+        run: |
+          $out = "$env:GITHUB_WORKSPACE/dial-forward/pyinstaller/dist/size_report.txt"
+          "TOTAL_MB=$([math]::Round((Get-ChildItem -Recurse -File | Measure-Object Length -Sum).Sum/1MB,1))" | Set-Content -Encoding utf8 $out
+          Get-ChildItem -Directory | ForEach-Object {
+            $m = [math]::Round((Get-ChildItem $_.FullName -Recurse -File | Measure-Object Length -Sum).Sum/1MB,1)
+            $n = (Get-ChildItem $_.FullName -Recurse -File).Count
+            "DIR $($_.Name) MB=$m FILES=$n" | Add-Content -Encoding utf8 $out
+          }
+          "BIGGEST" | Add-Content -Encoding utf8 $out
+          Get-ChildItem -Recurse -File | Sort-Object Length -Descending | Select-Object -First 40 | ForEach-Object {
+            "{0,8:N1} MB  {1}" -f ($_.Length/1MB), $_.Name | Add-Content -Encoding utf8 $out
+          }
+          Get-Content $out
+
+      - name: Upload size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: size_report.txt
+          path: dial-forward/pyinstaller/dist/size_report.txt
+          if-no-files-found: error
+
+      - name: Build MSI (WiX)
+        working-directory: dial-forward
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION).Trim()
+          .\msi\build_msi.ps1 -Bundle "pyinstaller\dist\DialForward" -Artifact "DialForward.msi" -ProductVersion $v
+
+      - name: Read version
+        id: ver
+        run: echo "v=$(cat dial-forward/VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DialForward.msi
+          path: dial-forward/DialForward.msi
+          if-no-files-found: error
+
+      - name: Publish MSI release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.v }}
+          generate_release_notes: false
+          files: dial-forward/DialForward.msi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
