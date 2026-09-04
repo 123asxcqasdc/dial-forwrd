@@ -607,11 +607,16 @@ class DialApp:
 
     @staticmethod
     def _local_version():
-        try:
-            with open(VERSION_PATH, encoding="utf-8") as f:
-                return f.read().strip() or "0"
-        except OSError:
-            return "0"
+        import sys as _s
+        cands = [VERSION_PATH,
+                 os.path.join(getattr(_s, "_MEIPASS", ""), "VERSION")]
+        for p in cands:
+            try:
+                with open(p, encoding="utf-8") as f:
+                    return f.read().strip() or "0"
+            except OSError:
+                continue
+        return "0"
 
     @staticmethod
     def _vkey(v):
@@ -1189,11 +1194,17 @@ def _relay_bin_dir():
 
 
 def _ensure_relay():
-    """Поднимает relay, если он ещё не слушает ws://127.0.0.1:4545."""
+    """Поднимает relay, если он не слушает ws://127.0.0.1:4545 или устарел."""
     import subprocess
     if _ws_alive():
-        log("[app] relay уже работает")
-        return
+        running = _ws_relay_version()
+        expected = DialApp._local_version()
+        if running is not None and running != expected:
+            log(f"[app] relay {running} != ожидаемый {expected} — перезапускаю")
+            _kill_relay()
+        else:
+            log(f"[app] relay уже работает (v{running})")
+            return
     base = _relay_bin_dir()
     if getattr(sys, "frozen", False):
         here = os.path.dirname(sys.executable)
@@ -1229,6 +1240,73 @@ def _ws_alive(timeout=2):
         return False
     finally:
         s.close()
+
+
+def _ws_relay_version(timeout=3):
+    """Версия запущенного relay (WS-команда status). None при ошибке."""
+    import asyncio
+    try:
+        import websockets
+    except ImportError:
+        return None
+
+    async def _q():
+        try:
+            async with websockets.connect("ws://127.0.0.1:4545",
+                                          open_timeout=timeout) as ws:
+                await ws.send('{"cmd":"status"}')
+                while True:
+                    raw = await asyncio.wait_for(ws.recv(), timeout)
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if "event" in msg:
+                        continue
+                    return msg.get("version")
+        except Exception:
+            return None
+
+    return asyncio.run(_q())
+
+
+def _kill_relay():
+    """Останавливает запущенный relay (shutdown -> taskkill/pkill)."""
+    import asyncio
+    try:
+        import websockets
+        has_ws = True
+    except ImportError:
+        has_ws = False
+
+    if has_ws:
+        async def _kill():
+            try:
+                async with websockets.connect("ws://127.0.0.1:4545",
+                                              open_timeout=2) as ws:
+                    await ws.send('{"cmd":"shutdown"}')
+                    try:
+                        await asyncio.wait_for(ws.recv(), 2)
+                    except (asyncio.TimeoutError, Exception):
+                        pass
+            except Exception:
+                pass
+        try:
+            asyncio.run(_kill())
+        except Exception:
+            pass
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not _ws_alive():
+            return
+        time.sleep(0.3)
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/IM", "Relay.exe", "/F"],
+                       capture_output=True)
+    else:
+        subprocess.run(["pkill", "-f", "relay.py"], capture_output=True)
+    time.sleep(0.5)
 
 
 def main():

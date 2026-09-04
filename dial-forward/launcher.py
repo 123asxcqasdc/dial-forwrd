@@ -8,6 +8,7 @@
 Использование:  python launcher.py [аргументы приложения...]
                 python launcher.py --call username
 """
+import json
 import os
 import socket
 import subprocess
@@ -58,6 +59,85 @@ def ws_alive(timeout=2):
         s.close()
 
 
+def _local_version():
+    """Версия, которую мы ожидаем от relay (файл VERSION рядом с launcher)."""
+    try:
+        with open(os.path.join(ROOT, "VERSION"), encoding="utf-8") as f:
+            return f.read().strip() or "0"
+    except OSError:
+        return "0"
+
+
+def _ws_query_version(timeout=3):
+    """Версия запущенного relay через WS (cmd=status). None при любой ошибке."""
+    import asyncio
+    try:
+        import websockets
+    except ImportError:
+        return None
+
+    async def _q():
+        try:
+            async with websockets.connect("ws://127.0.0.1:4545",
+                                          open_timeout=timeout) as ws:
+                await ws.send('{"cmd":"status"}')
+                while True:
+                    raw = await asyncio.wait_for(ws.recv(), timeout)
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if "event" in msg:
+                        continue
+                    return msg.get("version")
+        except Exception:
+            return None
+
+    return asyncio.run(_q())
+
+
+def _kill_existing_relay(timeout=5):
+    """Останавливает запущенный relay: сперва WS-команда shutdown, потом kill."""
+    import asyncio
+    try:
+        import websockets
+        has_ws = True
+    except ImportError:
+        has_ws = False
+
+    if has_ws:
+        async def _kill():
+            try:
+                async with websockets.connect("ws://127.0.0.1:4545",
+                                              open_timeout=2) as ws:
+                    await ws.send('{"cmd":"shutdown"}')
+                    try:
+                        await asyncio.wait_for(ws.recv(), 2)
+                    except (asyncio.TimeoutError, Exception):
+                        pass
+            except Exception:
+                pass
+        try:
+            asyncio.run(_kill())
+        except Exception:
+            pass
+
+    # дожидаемся, пока порт освободится
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not ws_alive():
+            return True
+        time.sleep(0.3)
+    # не освободился — бьём по имени процесса
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/IM", "Relay.exe", "/F"],
+                       capture_output=True, **popen_kwargs())
+    else:
+        subprocess.run(["pkill", "-f", "relay.py"], capture_output=True)
+    time.sleep(0.5)
+    return not ws_alive()
+
+
 def wait_ws(seconds=40):
     for _ in range(int(seconds / 0.5)):
         if ws_alive():
@@ -100,6 +180,15 @@ def main():
 def run_once(py):
     relay_was_up = ws_alive()
     relay_proc = None
+    expected = _local_version()
+
+    if relay_was_up:
+        running = _ws_query_version()
+        if running is not None and running != expected:
+            print(f"[launcher] relay {running} != ожидаемый {expected} — "
+                  f"перезапускаю relay", flush=True)
+            _kill_existing_relay()
+            relay_was_up = False
 
     if not relay_was_up:
         print("[launcher] relay не запущен — стартую...", flush=True)

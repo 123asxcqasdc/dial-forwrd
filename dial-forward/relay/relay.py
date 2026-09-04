@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 
 import websockets
@@ -25,6 +26,25 @@ log = logging.getLogger("relay")
 OFFICIAL_API_ID = 2040
 OFFICIAL_API_HASH = "b18441a1ff607e10a989891a5462e627"
 WS_ADDR = ("127.0.0.1", 4545)
+
+
+def _relay_version():
+    """Версия сборки relay: из VERSION рядом с бандлом (frozen) или в repo (dev)."""
+    cands = []
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        cands.append(os.path.join(base, "VERSION"))
+    else:
+        here = os.path.dirname(os.path.abspath(__file__))
+        cands += [os.path.join(here, "..", "VERSION"),
+                  os.path.join(here, "VERSION")]
+    for p in cands:
+        try:
+            with open(p, encoding="utf-8") as f:
+                return f.read().strip() or "0"
+        except OSError:
+            continue
+    return "0"
 
 
 # ---------- ключи (без tdata и без Telegram Desktop) ----------
@@ -424,7 +444,19 @@ class Relay:
             "self_id": self.self_id,
             "authorized": self.self_id is not None,
             "connected": bool(self.client and self.client.is_connected()),
+            "version": _relay_version(),
         }
+
+    async def shutdown(self):
+        """Корректно завершает relay по WS-команде (вызывается launcher'ом при
+        обновлении/несовпадении версии)."""
+        log.info("shutdown command received — останавливаюсь")
+        asyncio.create_task(self._bye())
+        return {"bye": True}
+
+    async def _bye(self):
+        await asyncio.sleep(0.1)
+        os._exit(0)
 
     async def login_phone(self, phone):
         self.phone = phone
@@ -750,6 +782,7 @@ class Relay:
         handlers = {
             "ping": lambda: self._conn_state(),
             "status": self.status,
+            "shutdown": self.shutdown,
             "login_phone": lambda: self.login_phone(data.get("phone", "")),
             "login_qr": self.login_qr,
             "login_code": lambda: self.login_code(data.get("code", ""), data.get("code_hash", "")),
