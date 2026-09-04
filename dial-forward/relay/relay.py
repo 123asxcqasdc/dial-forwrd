@@ -51,19 +51,94 @@ DC_CANDIDATES = [
 ]
 
 
+# ---------- proxy (SOCKS5/HTTP) ----------
+# В РФ Telegram заблокирован; работа через локальный SOCKS5/HTTP-прокси
+# (Nova/WARP и т.п.) задаётся переменной окружения DIALFWD_PROXY, например:
+#   DIALFWD_PROXY=socks5://127.0.0.1:1372
+#   DIALFWD_PROXY=http://127.0.0.1:1370
+#   DIALFWD_PROXY=socks5://user:pass@127.0.0.1:1372
+from urllib.parse import urlparse
+
+
+def parse_proxy_env():
+    """Разбирает DIALFWD_PROXY в формат, понятный Telethon (dict)."""
+    raw = os.environ.get("DIALFWD_PROXY", "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw if "://" in raw else "socks5://" + raw)
+    scheme = (parsed.scheme or "socks5").lower()
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (1080 if scheme != "http" else 8080)
+    proxy_type = "socks5" if scheme in ("socks5", "socks") else (
+        "socks4" if scheme == "socks4" else "http")
+    cfg = {
+        "proxy_type": proxy_type,
+        "addr": host,
+        "port": port,
+        "rdns": True,
+    }
+    if parsed.username:
+        cfg["username"] = parsed.username
+        cfg["password"] = parsed.password or ""
+    return cfg
+
+
+def get_session_proxy():
+    cfg = parse_proxy_env()
+    if cfg:
+        log.info("proxy enabled: %s://%s:%s", cfg["proxy_type"],
+                 cfg["addr"], cfg["port"])
+    return cfg
+
+
+async def _open_proxy_connection(cfg, host, port, timeout=12):
+    """Открывает TCP-соединение через прокси к (host, port).
+
+    Использует python_socks (asyncio) — тот же стек, что и Telethon,
+    поэтому поведение при зонде совпадает с реальным подключением.
+    """
+    import python_socks
+    from python_socks import ProxyType
+    from python_socks.async_.asyncio import Proxy
+
+    ptype = {
+        "socks5": ProxyType.SOCKS5,
+        "socks4": ProxyType.SOCKS4,
+        "http": ProxyType.HTTP,
+    }.get(cfg.get("proxy_type", "socks5"), ProxyType.SOCKS5)
+    proxy = Proxy.create(
+        proxy_type=ptype,
+        host=cfg["addr"],
+        port=cfg["port"],
+        username=cfg.get("username"),
+        password=cfg.get("password"),
+        rdns=cfg.get("rdns", True),
+    )
+    sock = await asyncio.wait_for(
+        proxy.connect(dest_host=host, dest_port=port), timeout=timeout)
+    sock.close()
+    return True
+
+
 async def probe_dc(fixed_dc=None):
     cands = [c for c in DC_CANDIDATES if fixed_dc is None or c[0] == fixed_dc]
     if not cands:
         cands = DC_CANDIDATES
+    proxy_cfg = get_session_proxy()
     for dc_id, ip, port in cands:
         try:
-            _, writer = await asyncio.wait_for(
-                asyncio.open_connection(ip, port), timeout=12)
-            writer.close()
-            log.info("dc probe ok: [%s]%s:%s", dc_id, ip, port)
+            if proxy_cfg:
+                await _open_proxy_connection(proxy_cfg, ip, port)
+            else:
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(ip, port), timeout=12)
+                writer.close()
+            log.info("dc probe ok%s: [%s]%s:%s",
+                     " via proxy" if proxy_cfg else "", dc_id, ip, port)
             return dc_id, ip, port
-        except (OSError, asyncio.TimeoutError):
-            log.info("dc probe fail: [%s]%s:%s", dc_id, ip, port)
+        except Exception:
+            log.info("dc probe fail%s: [%s]%s:%s",
+                     " via proxy" if proxy_cfg else "", dc_id, ip, port)
     return None
 
 
@@ -135,7 +210,8 @@ class Relay:
                 self.client = TelegramClient(
                     "tgrtc.session", self.keys["api_id"], self.keys["api_hash"],
                     connection=ConnectionTcpObfuscated,
-                    use_ipv6=ipv6, connection_retries=8, retry_delay=4)
+                    use_ipv6=ipv6, connection_retries=8, retry_delay=4,
+                    proxy=get_session_proxy())
                 @self.client.on(NewMessage)
                 async def handler(event: NewMessage.Event):
                     await self.on_new_message(event)

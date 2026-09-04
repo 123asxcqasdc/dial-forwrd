@@ -7,5 +7,6 @@ websockets>=13
 qrcode>=7.4
 pillow>=10
 pystray>=0.19
+python-socks>=2.4.0
 pyinstaller>=6.0
 gstreamer-meta==1.28.6
