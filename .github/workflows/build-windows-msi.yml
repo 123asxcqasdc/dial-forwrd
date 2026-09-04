@@ -70,7 +70,7 @@ jobs:
 
       - name: Read version
         id: ver
-        run: echo "v=$(cat dial-forward/VERSION)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(cat dial-forward/VERSION)" >> "$GITHUB_OUTPUT"
 
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v4
@@ -82,7 +82,7 @@ jobs:
       - name: Publish MSI release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.ver.outputs.v }}
+          tag_name: v${{ steps.ver.outputs.version }}
           generate_release_notes: false
           files: dial-forward/DialForward.msi
         env:
