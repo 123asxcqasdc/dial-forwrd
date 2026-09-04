@@ -26,6 +26,9 @@ Write-Host "Heat: harvesting $Bundle ..."
     -dr INSTALLDIR -var var.BundleDir -out bundle.wxs
 if ($LASTEXITCODE -ne 0) { throw "heat failed" }
 
+# --- 1b. copy license to working dir for WiX compiler ---
+Copy-Item "msi\License.rtf" -Destination "License.rtf" -Force
+
 # --- 2. product template ---
 $Template = @"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -39,6 +42,7 @@ $Template = @"
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
     <Media Id="1" Cabinet="data.cab" EmbedCab="yes" />
     <Property Id="ARPPRODUCTICON" Value="DF.ICO" />
+    <Property Id="WixUILicenseRtf" Value="License.rtf" />
     <Icon Id="DF.ICO" SourceFile="icons\dial_forward.ico" />
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
@@ -62,7 +66,8 @@ $Template = @"
       <ComponentGroupRef Id="AppComponents" />
       <ComponentRef Id="C_Menu" />
     </Feature>
-    <UIRef Id="WixUI_Minimal" />
+    <UIRef Id="WixUI_InstallDir" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
   </Product>
 </Wix>
 "@
