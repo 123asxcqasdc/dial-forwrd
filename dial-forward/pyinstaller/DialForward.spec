@@ -82,7 +82,7 @@ a_gui = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["hook_gi_dlls.py"],
     excludes=[],
     noarchive=False,
 )
@@ -113,7 +113,7 @@ a_relay = Analysis(
     hiddenimports=gst_hidden + ["telethon", "websockets"],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["hook_gi_dlls.py"],
     excludes=[],
     noarchive=False,
 )
