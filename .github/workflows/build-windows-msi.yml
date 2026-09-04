@@ -70,6 +70,7 @@ jobs:
 
       - name: Read version
         id: ver
+        shell: bash
         run: echo "version=$(cat dial-forward/VERSION)" >> "$GITHUB_OUTPUT"
 
       - name: Upload MSI artifact
