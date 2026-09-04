@@ -26,8 +26,42 @@ Write-Host "Heat: harvesting $Bundle ..."
     -dr INSTALLDIR -var var.BundleDir -out bundle.wxs
 if ($LASTEXITCODE -ne 0) { throw "heat failed" }
 
-# --- 1b. copy license to working dir for WiX compiler ---
-Copy-Item "msi\License.rtf" -Destination "License.rtf" -Force
+# --- 1b. generate license RTF for WiX compiler (WixUILicenseRtf) ---
+# WiX needs a valid RTF; if missing/broken, WixUI shows a lorem-ipsum placeholder.
+# We build it here with Windows-1252 encoding to guarantee correctness.
+$LicenseText = @"
+MIT License
+
+Copyright (c) 2026 Dial Forward contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"@
+$RtfBody = ($LicenseText -split "`r?`n" | ForEach-Object {
+    if ($_ -eq "") { "\par" } else { [System.Security.SecurityElement]::Escape($_) + "\par" }
+}) -join "`n"
+$Rtf = "{\rtf1\ansi\deff0{\fonttbl{\f0\fswiss\fcharset0 Calibri;}}\viewkind4\uc1\pard\f0\fs22`n$RtfBody}"
+[System.IO.File]::WriteAllText(
+    (Join-Path $PWD "License.rtf"),
+    $Rtf,
+    [System.Text.Encoding]::GetEncoding(1252)
+)
+if (-not (Test-Path "License.rtf")) { throw "License.rtf was not created" }
 
 # --- 2. product template ---
 $Template = @"
