@@ -22,7 +22,7 @@
 ### Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/123asxcqasdc/uliigra2/main/dial-forward/installer.sh -o installer.sh
+curl -fsSL https://raw.githubusercontent.com/123asxcqasdc/dial-forwrd/main/dial-forward/installer.sh -o installer.sh
 bash installer.sh
 ```
 
@@ -49,7 +49,7 @@ bash installer.sh
 
 ## Сборка из исходников
 
-Исходный код приложения и скрипты сборки находятся в основном репозитории: [123asxcqasdc/uliigra2](https://github.com/123asxcqasdc/uliigra2/tree/main/dial-forward).
+Исходный код приложения и скрипты сборки находятся в репозитории: [123asxcqasdc/dial-forwrd](https://github.com/123asxcqasdc/dial-forwrd/tree/main/dial-forward).
 
 ## Лицензия
 
