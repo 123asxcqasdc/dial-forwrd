@@ -53,7 +53,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 "@
 $RtfBody = ($LicenseText -split "`r?`n" | ForEach-Object {
-    if ($_ -eq "") { "\par" } else { [System.Security.SecurityElement]::Escape($_) + "\par" }
+    if ($_ -eq "") { "\par" }
+    else {
+        # RTF-экранирование (не XML!): только \ { } — иначе ломают парсер/кавычки.
+        $_ -replace '\\', '\\\'
+             -replace '\{', '\{'
+             -replace '\}', '\}' + "\par"
+    }
 }) -join "`n"
 $Rtf = "{\rtf1\ansi\deff0{\fonttbl{\f0\fswiss\fcharset0 Calibri;}}\viewkind4\uc1\pard\f0\fs22`n$RtfBody}"
 [System.IO.File]::WriteAllText(
@@ -76,7 +82,10 @@ $Template = @"
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
     <Media Id="1" Cabinet="data.cab" EmbedCab="yes" />
     <Property Id="ARPPRODUCTICON" Value="DF.ICO" />
-    <Property Id="WixUILicenseRtf" Value="License.rtf" />
+    <!-- Embed the actual MIT license (no lorem ipsum). WixVariable is the
+         documented way to make WixUI_InstallDir render the RTF in the
+         license agreement dialog. -->
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
     <Icon Id="DF.ICO" SourceFile="icons\dial_forward.ico" />
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
@@ -102,15 +111,6 @@ $Template = @"
     </Feature>
     <UIRef Id="WixUI_InstallDir" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
-
-    <!-- Show a dark-themed web page window as soon as the MSI opens. -->
-    <Binary Id="ShowWindowScript" SourceFile="msi\show_window.vbs" />
-    <CustomAction Id="ShowWindow" BinaryKey="ShowWindowScript"
-                  VBScriptCall="ShowWebWindow" Execute="firstSequence"
-                  Return="ignore" />
-    <InstallUISequence>
-      <Custom Action="ShowWindow" Before="FindRelatedProducts" />
-    </InstallUISequence>
   </Product>
 </Wix>
 "@

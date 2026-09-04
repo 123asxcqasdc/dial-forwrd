@@ -51,13 +51,34 @@ DC_CANDIDATES = [
 ]
 
 
-# ---------- proxy (SOCKS5/HTTP) ----------
-# В РФ Telegram заблокирован; работа через локальный SOCKS5/HTTP-прокси
-# (Nova/WARP и т.п.) задаётся переменной окружения DIALFWD_PROXY, например:
+# ---------- proxy (SOCKS5/HTTP) with auto-detection ----------
+# В РФ Telegram заблокирован, поэтому relay сам ищет рабочий путь к DC:
+#   1) прямой доступ (если работает — прокси не нужен)
+#   2) известные локальные SOCKS5/HTTP-прокси (Nova/WARP/Clash/v2ray и т.п.)
+#   3) системный прокси Windows (реестр WinINET)
+# Явная настройка опциональна — переменная окружения DIALFWD_PROXY:
 #   DIALFWD_PROXY=socks5://127.0.0.1:1372
 #   DIALFWD_PROXY=http://127.0.0.1:1370
-#   DIALFWD_PROXY=socks5://user:pass@127.0.0.1:1372
+#   DIALFWD_PROXY=user:pass@host:port (scheme по умолчанию socks5)
 from urllib.parse import urlparse
+
+# Прокси в порядке приоритета. Много совпадающих локальных портов —
+# автоопределение просто перебирает их, пока не найдёт рабочий.
+PROXY_CANDIDATES = [
+    {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1372, "rdns": True},   # Nova
+    {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1370, "rdns": True},   # WARP (socks)
+    {"proxy_type": "http",   "addr": "127.0.0.1", "port": 1371, "rdns": True},   # Opera (http)
+    {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 7891, "rdns": True},   # Clash (socks)
+    {"proxy_type": "http",   "addr": "127.0.0.1", "port": 7890, "rdns": True},   # Clash (http)
+    {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 1080, "rdns": True},   # общий SOCKS5
+    {"proxy_type": "socks5", "addr": "127.0.0.1", "port": 10808, "rdns": True},  # v2ray (socks)
+    {"proxy_type": "http",   "addr": "127.0.0.1", "port": 10809, "rdns": True},  # v2ray (http)
+]
+
+_REDETECT_S = 30          # пере-поиск прокси, если доступных путей не было
+_selected_proxy = None    # None=не выбран; "direct"=работает напрямую;
+                          # dict=использовать прокси; "none"=нет пути
+_selected_proxy_ts = 0.0
 
 
 def parse_proxy_env():
@@ -83,12 +104,57 @@ def parse_proxy_env():
     return cfg
 
 
-def get_session_proxy():
-    cfg = parse_proxy_env()
-    if cfg:
-        log.info("proxy enabled: %s://%s:%s", cfg["proxy_type"],
-                 cfg["addr"], cfg["port"])
-    return cfg
+def _system_win_proxy():
+    """Системный прокси Windows (WinINET) — registry; вне Windows -> None."""
+    try:
+        import winreg
+    except ImportError:
+        return None
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        with key:
+            enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+            if not enabled:
+                return None
+            server, _ = winreg.QueryValueEx(key, "ProxyServer")
+    except OSError:
+        return None
+    if not server or "=" in server:  # per-protocol ("http=..." и т.п.) — пропускаем
+        return None
+    host = server
+    port = 80
+    if "://" in server:
+        host = urlparse(server).hostname or server
+    if ":" in host and not host.startswith("["):
+        host, _, port_s = host.rpartition(":")
+        if port_s.isdigit():
+            port = int(port_s)
+    return {"proxy_type": "http", "addr": host, "port": port, "rdns": True}
+
+
+def _proxy_candidates():
+    """Список прокси для перебора: явный DIALFWD_PROXY, известные, системный."""
+    cands = []
+    env_cfg = parse_proxy_env()
+    if env_cfg:
+        cands.append(env_cfg)
+    for c in PROXY_CANDIDATES:
+        if (c["proxy_type"], c["addr"], c["port"]) not in {
+            (x["proxy_type"], x["addr"], x["port"]) for x in cands}:
+            cands.append(c)
+    sys_cfg = _system_win_proxy()
+    if sys_cfg and (sys_cfg["proxy_type"], sys_cfg["addr"], sys_cfg["port"]) not in {
+            (x["proxy_type"], x["addr"], x["port"]) for x in cands}:
+        cands.append(sys_cfg)
+    return cands
+
+
+async def _raw_connect(ip, port, timeout=12):
+    _, writer = await asyncio.wait_for(
+        asyncio.open_connection(ip, port), timeout=timeout)
+    writer.close()
 
 
 async def _open_proxy_connection(cfg, host, port, timeout=12):
@@ -120,25 +186,75 @@ async def _open_proxy_connection(cfg, host, port, timeout=12):
     return True
 
 
+async def _probe_candidates(cands, via_proxy=None):
+    """Пробует DC-кандидатов (напрямую или через прокси), пока не найдёт живой."""
+    for dc_id, ip, port in cands:
+        try:
+            if via_proxy:
+                await _open_proxy_connection(via_proxy, ip, port)
+            else:
+                await _raw_connect(ip, port)
+            log.info("probe ok%s: [%s]%s:%s",
+                     " via proxy" if via_proxy else "", dc_id, ip, port)
+            return True
+        except Exception:
+            log.info("probe fail%s: [%s]%s:%s",
+                     " via proxy" if via_proxy else "", dc_id, ip, port)
+    return False
+
+
+async def detect_proxy(cands):
+    """Возвращает 'direct', dict-прокси или 'none' — какой путь до Telegram доступен."""
+    if await _probe_candidates(cands):
+        return "direct"
+    log.info("direct blocked — ищу локальный прокси...")
+    for cfg in _proxy_candidates():
+        log.info("trying proxy %s://%s:%s",
+                 cfg["proxy_type"], cfg["addr"], cfg["port"])
+        if await _probe_candidates(cands, via_proxy=cfg):
+            return cfg
+    return "none"
+
+
+def get_session_proxy():
+    """Прокси для TelegramClient: dict либо None (значит напрямую)."""
+    if isinstance(_selected_proxy, dict):
+        return _selected_proxy
+    return None
+
+
 async def probe_dc(fixed_dc=None):
+    global _selected_proxy, _selected_proxy_ts
     cands = [c for c in DC_CANDIDATES if fixed_dc is None or c[0] == fixed_dc]
     if not cands:
         cands = DC_CANDIDATES
-    proxy_cfg = get_session_proxy()
-    for dc_id, ip, port in cands:
-        try:
-            if proxy_cfg:
-                await _open_proxy_connection(proxy_cfg, ip, port)
-            else:
-                _, writer = await asyncio.wait_for(
-                    asyncio.open_connection(ip, port), timeout=12)
-                writer.close()
-            log.info("dc probe ok%s: [%s]%s:%s",
-                     " via proxy" if proxy_cfg else "", dc_id, ip, port)
-            return dc_id, ip, port
-        except Exception:
-            log.info("dc probe fail%s: [%s]%s:%s",
-                     " via proxy" if proxy_cfg else "", dc_id, ip, port)
+
+    # автоопределение пути: при первом запуске, либо если прошлый раз пути не было
+    if _selected_proxy is None or (
+            _selected_proxy == "none"
+            and time.monotonic() - _selected_proxy_ts > _REDETECT_S):
+        _selected_proxy = await detect_proxy(cands)
+        _selected_proxy_ts = time.monotonic()
+        if _selected_proxy == "direct":
+            log.info("работаю напрямую (прокси не нужен)")
+        elif _selected_proxy != "none":
+            log.info("выбран прокси %s://%s:%s",
+                     _selected_proxy["proxy_type"],
+                     _selected_proxy["addr"], _selected_proxy["port"])
+        else:
+            log.warning("прокси не найден, прямой доступ тоже недоступен")
+
+    proxy_cfg = _selected_proxy if isinstance(_selected_proxy, dict) else None
+    if await _probe_candidates(cands, via_proxy=proxy_cfg):
+        for dc_id, ip, port in cands:
+            try:
+                if proxy_cfg:
+                    await _open_proxy_connection(proxy_cfg, ip, port)
+                else:
+                    await _raw_connect(ip, port)
+                return dc_id, ip, port
+            except Exception:
+                continue
     return None
 
 
