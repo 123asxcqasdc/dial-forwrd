@@ -9,7 +9,7 @@
 # ============================================================
 set -euo pipefail
 
-GITHUB_RAW="https://raw.githubusercontent.com/123asxcqasdc/uliigra2/main/dial-forward"
+GITHUB_RAW="https://raw.githubusercontent.com/123asxcqasdc/dial-forwrd/main/dial-forward"
 MIRROR_BASE="https://uliigra2.c6t.ru/dial-forward"
 APP_DIR="${1:-$HOME/dial-forward}"
 
