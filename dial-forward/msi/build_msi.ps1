@@ -115,8 +115,7 @@ $locPath = Join-Path $uiDir "WixUI_en-us.wxl"
 foreach ($wxs in $wxsFiles) {
     Push-Location (Split-Path $wxs -Parent)
     try {
-        & $Candle "-nologo" "-dBundleDir=$Bundle" "-dLicenseRtfPath=..\License.rtf" `
-            "-loc" $locPath $wxs
+        & $Candle "-nologo" "-dBundleDir=$Bundle" "-dLicenseRtfPath=..\License.rtf" $wxs
     }
     finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { throw "candle failed: $wxs" }
