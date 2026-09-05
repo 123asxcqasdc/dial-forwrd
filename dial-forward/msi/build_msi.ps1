@@ -57,11 +57,11 @@ $RtfBody = ($LicenseText -split "`r?`n" | ForEach-Object {
 }) -join "`n"
 $Rtf = "{\rtf1\ansi\deff0{\fonttbl{\f0\fswiss\fcharset0 Calibri;}}\viewkind4\uc1\pard\f0\fs22`n$RtfBody}"
 [System.IO.File]::WriteAllText(
-    (Join-Path $PWD "License.rtf"),
+    (Join-Path $PSScriptRoot "License.rtf"),
     $Rtf,
     [System.Text.Encoding]::GetEncoding(1252)
 )
-if (-not (Test-Path "License.rtf")) { throw "License.rtf was not created" }
+if (-not (Test-Path (Join-Path $PSScriptRoot "License.rtf"))) { throw "License.rtf was not created" }
 
 # --- 2. product template ---
 $Template = @"
@@ -108,20 +108,22 @@ Set-Content -Path "main.wxs" -Value $Template -Encoding UTF8
 
 # --- 3. compile & link (custom UI in ui\; no WixUIExtension) ---
 Write-Host "Candle: compiling..."
+$uiDir = Join-Path $PSScriptRoot "ui"
 $wxsFiles = @("main.wxs", "bundle.wxs") + `
-    (Get-ChildItem "ui\*.wxs" | ForEach-Object { $_.FullName })
+    (Get-ChildItem (Join-Path $uiDir "*.wxs") | ForEach-Object { $_.FullName })
+$locPath = Join-Path $uiDir "WixUI_en-us.wxl"
 foreach ($wxs in $wxsFiles) {
     $obj = [System.IO.Path]::ChangeExtension($wxs, "wixobj")
     & $Candle "-nologo" "-dBundleDir=$Bundle" "-dLicenseRtfPath=..\License.rtf" `
-        "-loc" "ui\WixUI_en-us.wxl" "-o" $obj $wxs
+        "-loc" $locPath "-o" $obj $wxs
     if ($LASTEXITCODE -ne 0) { throw "candle failed: $wxs" }
 }
 
 Write-Host "Light: linking -> $Artifact"
 $objs = @("main.wixobj", "bundle.wixobj") + `
-    (Get-ChildItem "ui\*.wixobj" | ForEach-Object { $_.FullName })
+    (Get-ChildItem (Join-Path $uiDir "*.wixobj") | ForEach-Object { $_.FullName })
 $lightArgs = @("-nologo", "-sice:ICE38", "-sice:ICE64", "-sice:ICE91", `
-               "-sw1076", "-loc", "ui\WixUI_en-us.wxl",
+               "-sw1076", "-loc", $locPath,
                "-o", $Artifact) + $objs
 & $Light @lightArgs
 if ($LASTEXITCODE -ne 0) { throw "light failed: $LASTEXITCODE" }
