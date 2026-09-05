@@ -26,7 +26,7 @@ for _n in ("stdout", "stderr"):
         except OSError:
             pass
 
-from call import CallSession, run_async
+from call import CallSession, capture_loop, run_async
 from relay_client import RelayClient
 from webrtc import WebRtcPeer
 
@@ -271,6 +271,7 @@ class DialApp:
 
     def _listener(self):
         async def run():
+            capture_loop()
             while True:
                 try:
                     await self.relay.listen()
@@ -807,6 +808,13 @@ class DialApp:
                 self._set_conn("blue", "Telegram онлайн — войдите в аккаунт")
         elif ev == "tg_disconnected":
             self._set_conn("orange", "Telegram переподключается...")
+        elif ev == "logged_out":
+            self.self_id = None
+            self.self_name = ""
+            self.contacts = []
+            self.contact_list.delete(0, "end")
+            self.status_var.set("Выполнен выход из аккаунта")
+            self.btn_login_menu.pack(pady=5)
         elif ev == "qr_new":
             url = msg.get("url")
             if url:
@@ -888,31 +896,20 @@ class DialApp:
     # ---------- контакты / вызовы ----------
 
     def _refresh_contacts(self, resp):
-        users = [d for d in resp.get("dialogs", []) if d.get("type") == "user"]
-        if not users:
-            self.contacts = []
-            self.contact_list.delete(0, "end")
-            self._log("личных чатов нет")
-            self.clear_progress()
-            return
-        self.set_progress("Проверяю, с кем можно создать группу...", indeterminate=True)
-        self.do_cmd({"cmd": "check_group",
-                     "user_ids": [d["id"] for d in users]},
-                    on_done=lambda r: self._contacts_checked(r, users))
-
-    def _contacts_checked(self, resp, users):
-        if not resp.get("ok") or not resp.get("result"):
-            self._log("не удалось проверить контакты")
-            self.clear_progress()
-            return
-        res = resp.get("result", {})
-        allowed = [d for d in users if res.get(str(d["id"]))]
+        """Личные чаты без групп/каналов/ботов; звонить можно тем, у кого
+        есть username или они в контактах (без проверки на relay)."""
+        users = [d for d in resp.get("dialogs", []) if d.get("type") == "user"
+                 and not d.get("bot")]
+        allowed = [d for d in users if d.get("username") or d.get("contact")]
         self.contacts = allowed
         self.contact_list.delete(0, "end")
         for d in self.contacts:
             un = ("@" + d["username"]) if d.get("username") else f"(id {d['id']})"
             self.contact_list.insert("end", f"{d.get('first_name') or d['title']}  {un}")
-        self._log(f"можно создать группу: {len(allowed)} из {len(users)}")
+        self._log(f"можно позвонить: {len(allowed)} из {len(users)}"
+                  f" личных чатов" if users else "личных чатов нет")
+        if not allowed:
+            self._log("нет пользователей для звонка (нужны username или контакты)")
         self.clear_progress()
 
     def _selected_users(self):
@@ -959,14 +956,19 @@ class DialApp:
         self._log(f"звонок начат (chat {chat_id})")
         self.in_call = True
         self.incoming = None
-        self.hub.begin_call(chat_id, offerer=True, group_mode=group_mode)
         self.call_title.set("Групповой звонок" if group_mode else "Звонок")
-        self.call_status.set("Ожидание собеседника..." if group_mode else "Звонок идёт...")
+        self.call_status.set("Соединяемся...")
         self.btn_mic.configure(text="Микро: вкл")
         self.parts_list.configure(text="")
         self._go("call")
         self.root.deiconify()
         self.root.lift()
+        try:
+            self.hub.begin_call(chat_id, offerer=True, group_mode=group_mode)
+        except Exception as e:
+            log(f"[hub] begin_call: {e!r}")
+            self._log(f"медиа недоступно: {e}")
+            self.call_status.set(f"Ошибка медиа: {e}")
 
     def on_incoming_accepted(self):
         self.call_status.set("Соединяемся...")
@@ -995,9 +997,12 @@ class DialApp:
     def _on_signal(self, chat_id, from_id, payload):
         t = payload.get("type")
         log(f"[ui] сигнал {t} (chat {chat_id})")
+        if from_id and from_id == self.self_id:
+            log("[ui] собственный сигнал — игнорирую")
+            return
         if self.hub.session and self.hub.chat_id == chat_id:
             self.resp_q.put(("signal", chat_id, payload))
-        elif t in ("offer", "ring"):
+        elif t in ("offer", "ring") and not self.in_call:
             self.resp_q.put(("incoming", chat_id, payload))
         else:
             self.resp_q.put(("signal", chat_id, payload))
@@ -1111,6 +1116,11 @@ class DialApp:
             self._on_update_done(item[1] is None)
         elif kind == "show_window":
             self._show_window()
+        elif kind == "err":
+            _, err = item
+            log(f"[app] {err}")
+            self._log(err)
+            self.status_var.set(err)
         elif kind == "event":
             _, msg = item
             self._on_relay_event(msg)
@@ -1160,6 +1170,9 @@ class DialApp:
     def _on_incoming(self, chat_id, payload):
         if self.in_call:
             log(f"[app] уже в звонке — игнорирую офер {chat_id}")
+            return
+        if self.incoming and self.incoming[0] == chat_id:
+            log(f"[app] дубликат входящего {chat_id} — игнорирую")
             return
         self.incoming = (chat_id, payload)
         t = payload.get("type")

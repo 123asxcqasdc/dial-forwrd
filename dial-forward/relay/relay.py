@@ -538,12 +538,20 @@ class Relay:
         return {}
 
     async def logout(self):
-        await self.client.log_out()
+        """Полный выход: log_out + удаление файла сессии + пересоздание клиента."""
+        if self.client is not None:
+            try:
+                await self.client.log_out()
+            except Exception as e:
+                log.warning("log_out: %s", e)
         self.self_id = None
         self.qr = None
         self.qr_refresh_count = 0
         self._last_conn_state = None
-        log.info("logged out")
+        self.calls.clear()
+        await self.broadcast({"event": "logged_out"})
+        await self._reset_session()
+        log.info("logged out: файл сессии удалён, telegram-часть перезапустится")
         return {}
 
     async def resolve(self, username):
@@ -723,6 +731,8 @@ class Relay:
                     "title": d.title,
                     "username": getattr(e, "username", ""),
                     "first_name": getattr(e, "first_name", ""),
+                    "contact": bool(getattr(e, "contact", False)),
+                    "bot": bool(getattr(e, "bot", False)),
                 })
             else:
                 out.append({
@@ -769,6 +779,10 @@ class Relay:
         sent = await self.client.send_message(chat_id, text)
         # исходящие не порождают событий — раздаём их клиентам сами,
         # чтобы клиенты одного relay могли сигналить друг другу
+        now = time.monotonic()
+        self.seen_ids = {k: v for k, v in self.seen_ids.items() if now - v < 300}
+        if getattr(sent, "id", None):
+            self.seen_ids[sent.id] = now
         await self.broadcast({
             "event": "message",
             "chat_id": chat_id,

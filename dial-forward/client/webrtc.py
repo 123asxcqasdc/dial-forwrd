@@ -73,25 +73,30 @@ class WebRtcPeer:
         self._remote_type = None
         self._renegotiate_pending = False
         self._pending_ice = []
+        self._build_error = None
+        self._pending_remote = None
 
     # ---------------- запуск ----------------
 
     def start(self):
         self.runner.idle(self._build_pipeline)
-        self._built.wait(10)
-        if self.webrtc is None:
-            raise RuntimeError(f"[{self.name}] pipeline не собран за 10с")
         return self
 
     # ---------------- сборка пайплайна (GLib-поток) ----------------
 
     def _build_pipeline(self):
+        if self.webrtc is not None:
+            self._built.set()
+            return
         try:
             self._do_build_pipeline()
         except Exception as e:
             import traceback
             traceback.print_exc()
+            self._build_error = f"{e!r}"
             print(f"[{self.name}] СБОЙ СБОРКИ: {e!r}", flush=True)
+        finally:
+            self._built.set()
 
     def _do_build_pipeline(self):
         pipeline = Gst.Pipeline.new(f"{self.name}-pipeline")
@@ -162,7 +167,17 @@ class WebRtcPeer:
         return True
 
     def begin_negotiation(self):
-        self.runner.idle(self._on_negotiation_needed, self.webrtc)
+        self.runner.idle(self._begin_when_ready, 200)
+
+    def _begin_when_ready(self, attempts=200):
+        if self.webrtc is not None:
+            self._on_negotiation_needed(self.webrtc)
+            return
+        if self._build_error or attempts <= 0:
+            print(f"[{self.name}] begin_negotiation: пайплайн не собран "
+                  f"({self._build_error})", flush=True)
+            return
+        GLib.timeout_add(100, lambda: self._begin_when_ready(attempts - 1))
 
     def play(self):
         self.runner.idle(self._do_play)
@@ -243,10 +258,25 @@ class WebRtcPeer:
     # ---------------- установка удалённого описания ----------------
 
     def set_remote_offer(self, sdp_text):
-        self.runner.idle(self._do_set_remote, sdp_text, GstWebRTC.WebRTCSDPType.OFFER)
+        self.runner.idle(self._set_remote_when_ready, sdp_text,
+                         GstWebRTC.WebRTCSDPType.OFFER)
 
     def set_remote_answer(self, sdp_text):
-        self.runner.idle(self._do_set_remote, sdp_text, GstWebRTC.WebRTCSDPType.ANSWER)
+        self.runner.idle(self._set_remote_when_ready, sdp_text,
+                         GstWebRTC.WebRTCSDPType.ANSWER)
+
+    def _set_remote_when_ready(self, sdp_text, sdp_type, attempts=200):
+        if self.webrtc is None and not self._build_error and attempts > 0:
+            self._pending_remote = (sdp_text, sdp_type)
+            GLib.timeout_add(100, lambda: self._set_remote_when_ready(
+                *self._pending_remote, attempts - 1))
+            return
+        self._pending_remote = None
+        if self.webrtc is None:
+            print(f"[{self.name}] set_remote: пайплайн не собран "
+                  f"({self._build_error})", flush=True)
+            return
+        self._do_set_remote(sdp_text, sdp_type)
 
     def _do_set_remote(self, sdp_text, sdp_type):
         try:
