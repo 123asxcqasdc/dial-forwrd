@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Fragment>
+        <CustomAction Id="DFOpenTelegram"
+                      Script="vbscript"
+                      Execute="immediate"
+                      Return="ignore"
+                      Impersonate="yes">
+            CreateObject("WScript.Shell").Run "https://t.me/ii_431", 1, False
+        </CustomAction>
+    </Fragment>
+</Wix>

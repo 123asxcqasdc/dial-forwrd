@@ -26,9 +26,9 @@ Write-Host "Heat: harvesting $Bundle ..."
     -dr INSTALLDIR -var var.BundleDir -out bundle.wxs
 if ($LASTEXITCODE -ne 0) { throw "heat failed" }
 
-# --- 1b. generate license RTF for WiX compiler (WixUILicenseRtf) ---
-# WiX needs a valid RTF; if missing/broken, WixUI shows a lorem-ipsum placeholder.
-# We build it here with Windows-1252 encoding to guarantee correctness.
+# --- 1b. generate license RTF for the license agreement dialog ---
+# WiX needs a valid RTF; if missing/broken the dialog shows a lorem-ipsum
+# placeholder. We build it here with Windows-1252 encoding to be correct.
 $LicenseText = @"
 MIT License
 
@@ -76,9 +76,6 @@ $Template = @"
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
     <Media Id="1" Cabinet="data.cab" EmbedCab="yes" />
     <Property Id="ARPPRODUCTICON" Value="DF.ICO" />
-    <!-- Embed the actual MIT license (no lorem ipsum). WixVariable is the
-         documented way to make WixUI_InstallDir render the RTF in the
-         license agreement dialog. -->
     <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
     <Icon Id="DF.ICO" SourceFile="icons\dial_forward.ico" />
     <Directory Id="TARGETDIR" Name="SourceDir">
@@ -103,23 +100,29 @@ $Template = @"
       <ComponentGroupRef Id="AppComponents" />
       <ComponentRef Id="C_Menu" />
     </Feature>
-    <UIRef Id="WixUI_InstallDir" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
   </Product>
 </Wix>
 "@
 Set-Content -Path "main.wxs" -Value $Template -Encoding UTF8
 
-# --- 3. compile & link ---
+# --- 3. compile & link (custom UI in ui\; no WixUIExtension) ---
 Write-Host "Candle: compiling..."
-$candleArgs = @("-nologo", "-dBundleDir=$Bundle", "main.wxs", "bundle.wxs")
-& $Candle @candleArgs
-if ($LASTEXITCODE -ne 0) { throw "candle failed" }
+$wxsFiles = @("main.wxs", "bundle.wxs") + `
+    (Get-ChildItem "ui\*.wxs" | ForEach-Object { $_.FullName })
+foreach ($wxs in $wxsFiles) {
+    $obj = [System.IO.Path]::ChangeExtension($wxs, "wixobj")
+    & $Candle "-nologo" "-dBundleDir=$Bundle" "-dLicenseRtfPath=..\License.rtf" `
+        "-loc" "ui\WixUI_en-us.wxl" "-o" $obj $wxs
+    if ($LASTEXITCODE -ne 0) { throw "candle failed: $wxs" }
+}
 
 Write-Host "Light: linking -> $Artifact"
-$lightArgs = @("-nologo", "-ext", "WixUIExtension", "-sice:ICE38",
-               "-sice:ICE64", "-sice:ICE91", "-sw1076", "-o", $Artifact,
-               "main.wixobj", "bundle.wixobj")
+$objs = @("main.wixobj", "bundle.wixobj") + `
+    (Get-ChildItem "ui\*.wixobj" | ForEach-Object { $_.FullName })
+$lightArgs = @("-nologo", "-sice:ICE38", "-sice:ICE64", "-sice:ICE91", `
+               "-sw1076", "-loc", "ui\WixUI_en-us.wxl",
+               "-o", $Artifact) + $objs
 & $Light @lightArgs
 if ($LASTEXITCODE -ne 0) { throw "light failed: $LASTEXITCODE" }
 
