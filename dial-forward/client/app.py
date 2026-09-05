@@ -11,6 +11,7 @@ import json
 import os
 import queue
 import secrets
+import subprocess
 import sys
 import tempfile
 import threading
@@ -62,6 +63,10 @@ UPDATE_FILES = [
 UPD_CHECK_INTERVAL = 3 * 3600   # фоновая проверка каждые 3 часа
 UPD_INTERACT_THROTTLE = 300     # при взаимодействии — не чаще раза в 5 минут
 RESTART_CODE = 75               # launcher перезапускает relay+app
+MSI_EXIT_CODE = 76              # выход без перезапуска: идёт MSI-обновление
+MSI_URL = "https://github.com/123asxcqasdc/dial-forwrd/releases/latest/download/DialForward.msi"
+RELEASES_API = "https://api.github.com/repos/123asxcqasdc/dial-forwrd/releases/latest"
+MSI_MIN_SIZE = 8 << 20          # меньше 8 МБ — это не DialForward.msi
 APP_LOCK_PORT = 4548            # single-instance: локальный порт-замок
 
 
@@ -633,6 +638,16 @@ class DialApp:
                     return r.read().decode("utf-8", "replace").strip()
             except Exception:
                 continue
+        # fallback: тег последнего релиза на GitHub (v1.3.7 -> 1.3.7)
+        try:
+            import json as _json
+            with urllib.request.urlopen(RELEASES_API, timeout=10) as r:
+                tag = _json.load(r).get("tag_name", "")
+            v = tag[1:] if tag.startswith("v") else tag
+            if v:
+                return v
+        except Exception:
+            pass
         return None
 
     def _maybe_check_update(self, force=False):
@@ -643,9 +658,6 @@ class DialApp:
         threading.Thread(target=self._check_update_bg, daemon=True).start()
 
     def _check_update_bg(self):
-        if getattr(sys, "frozen", False):
-            # MSI-сборка: обновление = переустановка нового MSI, не патчи
-            return
         rv = self._remote_version()
         if not rv:
             return
@@ -677,6 +689,10 @@ class DialApp:
         threading.Thread(target=self._update_worker, daemon=True).start()
 
     def _update_worker(self):
+        if getattr(sys, "frozen", False) or os.name == "nt":
+            # установленная MSI-сборка (и вообще Windows): качаем полный MSI
+            self._msi_worker()
+            return
         import urllib.request
         wanted = list(UPDATE_FILES) + ["VERSION"]
         ok = True
@@ -705,6 +721,93 @@ class DialApp:
                 ok = False
                 break
         self.resp_q.put(("update_done" if ok else "update_fail", None))
+
+    def _msi_worker(self):
+        """Скачивает полный DialForward.msi из последнего релиза GitHub."""
+        import urllib.request
+        msi = os.path.join(tempfile.gettempdir(),
+                           f"DialForward-{self._remote_version() or 'update'}.msi")
+        try:
+            req = urllib.request.Request(MSI_URL,
+                                         headers={"User-Agent": "DialForward/updater"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                total = int(r.headers.get("Content-Length") or 0)
+                done = 0
+                with open(msi, "wb") as f:
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
+                        if total:
+                            self.resp_q.put(("dlprogress", done, total))
+        except Exception as e:
+            log(f"[update] скачивание MSI: {e!r}")
+            try:
+                os.remove(msi)
+            except OSError:
+                pass
+            self.resp_q.put(("update_done", False))
+            return
+        if not (os.path.isfile(msi) and os.path.getsize(msi) > MSI_MIN_SIZE):
+            log(f"[update] MSI подозрительного размера: "
+                f"{os.path.getsize(msi) if os.path.isfile(msi) else 0} байт")
+            self.resp_q.put(("update_done", False))
+            return
+        self.resp_q.put(("msi_ready", msi))
+
+    def _on_msi_ready(self, msi_path):
+        self.clear_progress()
+        self.upd_deferred = None
+        self.btn_update.pack_forget()
+        messagebox.showinfo(
+            "Обновление",
+            "Новая версия скачана. Приложение закроется,\n"
+            "установится обновление и запустится заново.")
+        log("[update] останавливаю relay для обновления...")
+        try:
+            _kill_relay()
+        except Exception as e:
+            log(f"[update] relay: {e!r}")
+        try:
+            self._launch_msi_install(msi_path)
+        except Exception as e:
+            log(f"[update] запуск установщика: {e!r}")
+            messagebox.showerror("Обновление",
+                                 f"Не удалось запустить установку:\n{e}")
+            return
+        self.restart_code = MSI_EXIT_CODE
+        if getattr(self, "tray", None) is not None:
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
+        self.root.destroy()
+
+    def _launch_msi_install(self, msi_path):
+        """Отложенный msiexec: ждём, пока приложение закроется, ставим MSI,
+        запускаем свежую версию из стандартного пути установки."""
+        import subprocess
+        if os.name != "nt":
+            raise RuntimeError("полное обновление доступно только на Windows")
+        local = os.environ.get("LOCALAPPDATA") or os.path.join(
+            os.environ.get("USERPROFILE", ""), "AppData", "Local")
+        exe = os.path.join(local, "DialForward", "DialForward.exe")
+        log_path = os.path.join(tempfile.gettempdir(), "DialForward-update.log")
+        helper = os.path.join(tempfile.gettempdir(), "DialForward-update.cmd")
+        cli = ("@echo off\r\n"
+               "ping -n 4 127.0.0.1 >nul\r\n"
+               'msiexec /i "%1" /qn /norestart /l*v "%2"\r\n'
+               'if exist "%3" start "" "%3"\r\n')
+        with open(helper, "w", encoding="ascii", errors="replace") as f:
+            f.write(cli)
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen(
+            ["cmd", "/c", helper, msi_path, log_path, exe],
+            creationflags=flags, close_fds=True,
+            cwd=os.path.dirname(msi_path))
+        log("[update] установщик запущен (отложенный msiexec)")
 
     def _on_update_avail(self, ver):
         if messagebox.askyesno(
@@ -1112,6 +1215,14 @@ class DialApp:
         elif kind == "update_avail":
             _, ver = item
             self._on_update_avail(ver)
+        elif kind == "dlprogress":
+            _, done, total = item
+            if not self.progress_var.get():
+                self.set_progress("Загрузка DialForward.msi...", maximum=total)
+            self.update_progress(done, total)
+        elif kind == "msi_ready":
+            _, msi = item
+            self._on_msi_ready(msi)
         elif kind == "update_done":
             self._on_update_done(item[1] is None)
         elif kind == "show_window":
