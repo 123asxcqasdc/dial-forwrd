@@ -810,7 +810,7 @@ class DialApp:
                "ping -n 2 127.0.0.1 >nul\r\n"
                "goto loop\r\n"
                ":done\r\n"
-               'msiexec /i "%1" /qn /norestart /l*v "%2"\r\n'
+               'msiexec /i "%1" /qb /norestart /l*v "%2"\r\n'
                'if exist "%3" start "" "%3"\r\n')
         with open(helper, "w", encoding="ascii", errors="replace") as f:
             f.write(cli)
