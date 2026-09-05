@@ -113,9 +113,12 @@ $wxsFiles = @("main.wxs", "bundle.wxs") + `
     (Get-ChildItem (Join-Path $uiDir "*.wxs") | ForEach-Object { $_.FullName })
 $locPath = Join-Path $uiDir "WixUI_en-us.wxl"
 foreach ($wxs in $wxsFiles) {
-    $obj = [System.IO.Path]::ChangeExtension($wxs, "wixobj")
-    & $Candle "-nologo" "-dBundleDir=$Bundle" "-dLicenseRtfPath=..\License.rtf" `
-        "-loc" $locPath "-o" $obj $wxs
+    Push-Location (Split-Path $wxs -Parent)
+    try {
+        & $Candle "-nologo" "-dBundleDir=$Bundle" "-dLicenseRtfPath=..\License.rtf" `
+            "-loc" $locPath $wxs
+    }
+    finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { throw "candle failed: $wxs" }
 }
 
