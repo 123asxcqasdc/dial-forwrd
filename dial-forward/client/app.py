@@ -1325,6 +1325,23 @@ def _relay_bin_dir():
     return os.path.join(APP_ROOT, "relay")
 
 
+def _dev_python(subprocess):
+    """Интерпретатор для dev-запуска relay: venv проекта, иначе sys.executable."""
+    cands = [os.path.join(APP_ROOT, ".venv", "bin", "python"),
+             os.path.join(APP_ROOT, ".venv", "Scripts", "python.exe")]
+    for c in cands:
+        if not os.path.exists(c):
+            continue
+        try:
+            r = subprocess.run([c, "-c", "import telethon, websockets"],
+                               capture_output=True, timeout=15)
+            if r.returncode == 0:
+                return c
+        except Exception:
+            continue
+    return sys.executable
+
+
 def _ensure_relay():
     """Поднимает relay, если он не слушает ws://127.0.0.1:4545 или устарел."""
     import subprocess
@@ -1343,7 +1360,7 @@ def _ensure_relay():
         relay = [os.path.join(here, "Relay.exe")]
         cwd = here
     else:
-        relay = [sys.executable, os.path.join(base, "relay.py")]
+        relay = [_dev_python(subprocess), os.path.join(base, "relay.py")]
         cwd = base
     log("[app] запускаю relay...")
     p = subprocess.Popen(relay, cwd=cwd, stdout=subprocess.DEVNULL,

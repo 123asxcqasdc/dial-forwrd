@@ -29,20 +29,34 @@ CLIENT_DIR = os.path.join(ROOT, "client")
 WS_ADDR = ("127.0.0.1", 4545)
 
 
+def _can_import(py, mods):
+    """True, если интерпретатор существует и может импортировать модули."""
+    if not py or not os.path.exists(py):
+        return False
+    try:
+        r = subprocess.run([py, "-c", "import " + mods],
+                           capture_output=True, timeout=15,
+                           **popen_kwargs())
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def pick_python():
+    """Первый РАБОЧИЙ интерпретатор: venv проекта, иначе sys.executable."""
     if os.name == "nt":
         candidates = [
-            sys.executable,
             os.path.join(ROOT, ".venv", "Scripts", "python.exe"),
+            sys.executable,
             os.path.join("C:", os.sep, "msys64", "mingw64", "bin", "python.exe"),
         ]
     else:
         candidates = [
-            sys.executable,
             os.path.join(ROOT, ".venv", "bin", "python"),
+            sys.executable,
         ]
     for c in candidates:
-        if c and os.path.exists(c):
+        if _can_import(c, "telethon, websockets, tkinter"):
             return c
     return sys.executable
 
