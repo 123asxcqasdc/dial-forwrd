@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
@@ -631,7 +632,6 @@ class DialApp:
         return tuple(int(x) for x in nums) if nums else (0,)
 
     def _remote_version(self):
-        import urllib.request
         for base in UPDATE_BASES:
             try:
                 with urllib.request.urlopen(base + "VERSION", timeout=10) as r:
@@ -640,9 +640,8 @@ class DialApp:
                 continue
         # fallback: тег последнего релиза на GitHub (v1.3.7 -> 1.3.7)
         try:
-            import json as _json
             with urllib.request.urlopen(RELEASES_API, timeout=10) as r:
-                tag = _json.load(r).get("tag_name", "")
+                tag = json.load(r).get("tag_name", "")
             v = tag[1:] if tag.startswith("v") else tag
             if v:
                 return v
@@ -693,7 +692,6 @@ class DialApp:
             # установленная MSI-сборка (и вообще Windows): качаем полный MSI
             self._msi_worker()
             return
-        import urllib.request
         wanted = list(UPDATE_FILES) + ["VERSION"]
         ok = True
         for rel in wanted:
@@ -724,7 +722,6 @@ class DialApp:
 
     def _msi_worker(self):
         """Скачивает полный DialForward.msi из последнего релиза GitHub."""
-        import urllib.request
         msi = os.path.join(tempfile.gettempdir(),
                            f"DialForward-{self._remote_version() or 'update'}.msi")
         try:
@@ -778,17 +775,14 @@ class DialApp:
                                  f"Не удалось запустить установку:\n{e}")
             return
         self.restart_code = MSI_EXIT_CODE
-        if getattr(self, "tray", None) is not None:
-            try:
-                self.tray.stop()
-            except Exception:
-                pass
-        self.root.destroy()
+        # жёсткий выход: никаких импортов/разборок после запуска установщика —
+        # старые файлы _internal могут уже быть удалены, и ленивый импорт упадёт
+        self.root.update_idletasks()
+        os._exit(MSI_EXIT_CODE)
 
     def _launch_msi_install(self, msi_path):
-        """Отложенный msiexec: ждём, пока приложение закроется, ставим MSI,
-        запускаем свежую версию из стандартного пути установки."""
-        import subprocess
+        """Отложенный msiexec: ждём полного закрытия приложения/relay,
+        ставим MSI, запускаем свежую версию из стандартного пути установки."""
         if os.name != "nt":
             raise RuntimeError("полное обновление доступно только на Windows")
         local = os.environ.get("LOCALAPPDATA") or os.path.join(
@@ -797,7 +791,21 @@ class DialApp:
         log_path = os.path.join(tempfile.gettempdir(), "DialForward-update.log")
         helper = os.path.join(tempfile.gettempdir(), "DialForward-update.cmd")
         cli = ("@echo off\r\n"
-               "ping -n 4 127.0.0.1 >nul\r\n"
+               "set N=0\r\n"
+               ":loop\r\n"
+               "set /a N+=1\r\n"
+               "if %N% GTR 300 goto done\r\n"
+               'tasklist /FI "IMAGENAME eq DialForward.exe" 2>nul '
+               '| find /I "DialForward.exe" >nul\r\n'
+               "if not errorlevel 1 goto nap\r\n"
+               'tasklist /FI "IMAGENAME eq Relay.exe" 2>nul '
+               '| find /I "Relay.exe" >nul\r\n'
+               "if not errorlevel 1 goto nap\r\n"
+               "goto done\r\n"
+               ":nap\r\n"
+               "ping -n 2 127.0.0.1 >nul\r\n"
+               "goto loop\r\n"
+               ":done\r\n"
                'msiexec /i "%1" /qn /norestart /l*v "%2"\r\n'
                'if exist "%3" start "" "%3"\r\n')
         with open(helper, "w", encoding="ascii", errors="replace") as f:
