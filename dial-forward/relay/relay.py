@@ -293,6 +293,7 @@ class Relay:
         self.qr = None
         self.qr_refresh_count = 0
         self._last_conn_state = None   # для broadcast только при изменении
+        self._last_liveness_t = 0.0    # последняя реальная проверка Telegram
 
     async def start(self):
         asyncio.create_task(self._connection_loop())
@@ -327,6 +328,28 @@ class Relay:
                     await self.broadcast({"event": "tg_disconnected"})
                     break
                 await self._push_conn_state()
+                # реальная проверка канала: is_connected долго не замечает
+                # «тихий» обрыв, поэтому раз в 30с гоняем настоящий RPC
+                if time.monotonic() - self._last_liveness_t >= 30:
+                    self._last_liveness_t = time.monotonic()
+                    try:
+                        await asyncio.wait_for(self._ping_telegram(), timeout=6)
+                    except Exception as e:
+                        log.warning("telegram не отвечает (%s) — разрываю "
+                                    "соединение", type(e).__name__)
+                        try:
+                            await self.client.disconnect()
+                        except Exception:
+                            pass
+                        await self.broadcast({"event": "tg_disconnected"})
+                        break
+
+    async def _ping_telegram(self):
+        """Лёгкий RPC, доказывающий живую TCP-связь к Telegram DC."""
+        try:
+            await self.client(functions.help.GetConfigRequest())
+        except Exception:
+            raise
 
     async def _connect_once(self):
         while True:

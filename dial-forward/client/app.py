@@ -258,6 +258,10 @@ class DialApp:
         self.relay = RelayClient(WS_URL)
         self.relay.on_signal = self._on_signal
         self.relay.on_event = self._on_relay_event
+        self.relay.on_ws_state = self._on_ws_state
+
+        self._was_connected = False  # было ли соединение с Telegram
+        self._ws_ok = None           # состояние WS к relay (transition)
 
         self._build()
         if start_minimized:
@@ -453,7 +457,7 @@ class DialApp:
         # ---- настройки ----
         st = ttk.Frame(sc, padding=8)
         ttk.Label(st, text="Настройки", font=("Sans", 13, "bold")).pack(pady=6)
-        self.logs_var = tk.BooleanVar(value=self.settings.get("show_logs", True))
+        self.logs_var = tk.BooleanVar(value=self.settings.get("show_logs", False))
         ttk.Checkbutton(st, text="Показывать логи", variable=self.logs_var,
                         command=self._toggle_logs).pack(anchor="w", pady=4)
         ttk.Button(st, text="← Главное меню", command=lambda: self._go("main")).pack(pady=4)
@@ -517,7 +521,7 @@ class DialApp:
         self.progress.pack(side="left")
         self.progress_holder.pack(fill="x", pady=(0, 6))
 
-        if self.settings.get("show_logs", True):
+        if self.settings.get("show_logs", False):
             self.lf.pack(fill="x")
 
         self._go("main")
@@ -880,10 +884,19 @@ class DialApp:
         self.settings["show_logs"] = show
         self._save_settings()
         if show:
+            self._log("логи включены")
             self.lf.pack(fill="x", before=self.progress_holder)
+            self.logw.see("end")
         else:
+            self._log("логи выключены")
             self.lf.pack_forget()
-        self._log("логи включены" if show else "логи выключены")
+
+    def _show_logs(self):
+        """Показывает лог-панель (например, при обрыве соединения)."""
+        self.lf.pack(fill="x", before=self.progress_holder)
+        self.logw.configure(state="normal")
+        self.logw.see("end")
+        self.logw.configure(state="disabled")
 
     # ---------- прогресс ----------
 
@@ -911,13 +924,19 @@ class DialApp:
             self.resp_q.put(("progress", msg))
         elif ev == "conn":
             if not msg.get("connected"):
+                if self._was_connected:
+                    self._show_logs()
                 self._set_conn("orange", "Telegram подключается...")
+                self._was_connected = False
             elif msg.get("authorized"):
                 name = getattr(self, "self_name", "") or ""
                 self._set_conn("green", f"Онлайн: {name}" if name else "Онлайн")
+                self._was_connected = True
             else:
                 self._set_conn("blue", "Telegram онлайн — войдите в аккаунт")
+                self._was_connected = True
         elif ev == "tg_disconnected":
+            self._show_logs()
             self._set_conn("orange", "Telegram переподключается...")
         elif ev == "logged_out":
             self.self_id = None
@@ -950,8 +969,27 @@ class DialApp:
             self.status_var.set("Не авторизован — нажмите «Войти в аккаунт»")
             self.btn_login_menu.pack(pady=5)
 
+    def _on_ws_state(self, connected):
+        """WS к relay (приём событий) сломался/восстановился (поток слушателя)."""
+        self.resp_q.put(("ws_state", connected))
+
+    def _on_ws_change(self, connected):
+        """Реакция на изменение WS-соединения с relay (главный поток)."""
+        if connected == self._ws_ok:
+            return
+        self._ws_ok = connected
+        if connected:
+            self._log("[relay] связь восстановлена")
+            if self.self_id is None:
+                self.do_cmd({"cmd": "status"}, True)
+        else:
+            self._show_logs()
+            self._log("[relay] связь с relay потеряна")
+            self._set_conn("red", "Нет связи с релеем — переподключение...")
+
     def _log(self, text):
-        if not self.settings.get("show_logs", True):
+        if not (self.settings.get("show_logs", False)
+                or self.logw.winfo_ismapped()):
             return
         self.logw.configure(state="normal")
         self.logw.insert("end", text + "\n")
@@ -1243,6 +1281,8 @@ class DialApp:
         elif kind == "event":
             _, msg = item
             self._on_relay_event(msg)
+        elif kind == "ws_state":
+            self._on_ws_change(item[1])
 
     def _on_resp(self, cmd, resp, log_reply, on_done):
         if log_reply and resp.get("ok"):

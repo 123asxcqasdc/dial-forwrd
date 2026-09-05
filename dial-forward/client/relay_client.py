@@ -19,6 +19,7 @@ class RelayClient:
         self.on_message = None   # (chat_id, from_id, msg_id, text)
         self.on_signal = None    # (chat_id, from_id, payload)
         self.on_event = None     # любой event (dict)
+        self.on_ws_state = None  # WS-соединение приёма событий: True/False
 
     # ---- команды (каждая на своём соединении, ответ ждём) ----
 
@@ -70,25 +71,32 @@ class RelayClient:
                 async with websockets.connect(self.url, max_size=8 << 20,
                                               open_timeout=5,
                                               ping_interval=20) as ws:
+                    attempt = 0
+                    if self.on_ws_state:
+                        self.on_ws_state(True)
                     if attempt:
                         print(f"[{_ts()}][relay_client] listen: подключён "
                               f"после {attempt} неудач", flush=True)
                     else:
                         print(f"[{_ts()}][relay_client] listen: подключён",
                               flush=True)
-                    attempt = 0
                     async for raw in ws:
                         try:
                             self._dispatch(json.loads(raw))
                         except json.JSONDecodeError:
                             pass
+                    print(f"[{_ts()}][relay_client] listen: сервер закрыл "
+                          f"соединение", flush=True)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 attempt += 1
-                delay = min(3 * attempt, 15)
                 print(f"[{_ts()}][relay_client] listen: ошибка "
-                      f"{type(e).__name__}: {e} — повтор через {delay}с "
-                      f"(попытка {attempt})", flush=True)
-                await asyncio.sleep(delay)
+                      f"{type(e).__name__}: {e} — повтор (попытка {attempt})",
+                      flush=True)
+            if self.on_ws_state:
+                self.on_ws_state(False)
+            await asyncio.sleep(min(3 * attempt if attempt else 1, 15))
 
     # ---- хелперы ----
 
