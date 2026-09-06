@@ -62,6 +62,8 @@ class WebRtcPeer:
         self.on_ice_candidate = None     # (candidate_string)
         self.on_connection_state = None  # (state_string)
         self.on_incoming_stream = None   # (element_name)
+        self.on_build_error = None       # (error_string) — пайплайн не собрался
+        self.on_gst_error = None         # (error_string) — ошибка из bus
         self.pipeline = None
         self.webrtc = None
         self._built = threading.Event()
@@ -95,6 +97,11 @@ class WebRtcPeer:
             traceback.print_exc()
             self._build_error = f"{e!r}"
             print(f"[{self.name}] СБОЙ СБОРКИ: {e!r}", flush=True)
+            if self.on_build_error:
+                try:
+                    self.on_build_error(f"{e!r}")
+                except Exception:
+                    pass
         finally:
             self._built.set()
 
@@ -103,6 +110,15 @@ class WebRtcPeer:
         webrtc = Gst.ElementFactory.make("webrtcbin", "webrtc")
         webrtc.set_property("name", self.name)
         webrtc.set_property("bundle-policy", 2)  # max-bundle
+        # STUN: иначе из-за NAT только host/mDNS-кандидаты, между машинами не связаться
+        for stun in ("stun://stun.l.google.com:19302",
+                     "stun.l.google.com:19302"):
+            try:
+                webrtc.set_property("stun-server", stun)
+                print(f"[{self.name}] STUN: {stun}", flush=True)
+                break
+            except Exception:
+                continue
         pipeline.add(webrtc)
 
         src = Gst.ElementFactory.make(self.audio_src or "autoaudiosrc", "src")
@@ -161,9 +177,15 @@ class WebRtcPeer:
     def _on_bus_message(self, bus, msg):
         if msg.type in (Gst.MessageType.ERROR, Gst.MessageType.WARNING):
             err, dbg = msg.parse_error() if msg.type == Gst.MessageType.ERROR else msg.parse_warning()
-            print(f"[{self.name}] GStreamer {msg.type}: {err.message}", flush=True)
+            text = f"{err.message}"
+            print(f"[{self.name}] GStreamer {msg.type}: {text}", flush=True)
             if dbg:
                 print(f"  debug: {dbg[:300]}", flush=True)
+            if self.on_gst_error and msg.type == Gst.MessageType.ERROR:
+                try:
+                    self.on_gst_error(text)
+                except Exception:
+                    pass
         return True
 
     def begin_negotiation(self):

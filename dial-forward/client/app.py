@@ -237,6 +237,8 @@ class CallHub:
             peer = self._add_peer(cid, offerer=False)
         else:
             log("[hub] повторный офер — ренегоциация (видео)")
+        if cid:
+            peer._to = cid
         peer.set_remote_offer(sdp)
 
     def on_answer(self, sdp, cid):
@@ -246,12 +248,19 @@ class CallHub:
         if cid and self.peers.get(None) is not None:
             self.peers[cid] = peer
             del self.peers[None]
+        if cid:
+            peer._to = cid
         peer.set_remote_answer(sdp)
 
     def on_ice(self, candidate, cid):
         peer = self.peers.get(cid) or self.peers.get(None)
         if peer is None:
             return
+        if cid and self.peers.get(None) is not None:
+            self.peers[cid] = peer
+            del self.peers[None]
+        if cid:
+            peer._to = cid
         peer.add_remote_ice(candidate)
 
     def on_join(self, user_id, cid):
@@ -283,11 +292,13 @@ class CallHub:
             audio_src, audio_sink = "pulsesrc", "pulsesink"
         peer = WebRtcPeer(audio_src=audio_src, audio_sink=audio_sink,
                           name=name, auto_play=offerer)
-        to = cid or ""
-        peer.on_offer_ready = lambda sdp: run_async(self.session.send_offer(sdp, to=to))
-        peer.on_answer_ready = lambda sdp: run_async(self.session.send_answer(sdp, to=to))
-        peer.on_ice_candidate = lambda c: run_async(self.session.send_ice(c, to=to))
+        peer._to = cid or ""
+        peer.on_offer_ready = lambda sdp: run_async(self.session.send_offer(sdp, to=peer._to))
+        peer.on_answer_ready = lambda sdp: run_async(self.session.send_answer(sdp, to=peer._to))
+        peer.on_ice_candidate = lambda c: run_async(self.session.send_ice(c, to=peer._to))
         peer.on_connection_state = self.app.on_peer_state
+        peer.on_build_error = lambda msg: self._peer_err("медиа не собрано: " + msg)
+        peer.on_gst_error = lambda msg: self._peer_err("GStreamer: " + msg)
         peer.start()
         self.peers[cid] = peer
         if offerer:
@@ -295,6 +306,10 @@ class CallHub:
         if self.muted:
             peer.set_muted(True)
         return peer
+
+    def _peer_err(self, msg):
+        log(f"[hub] {msg}")
+        self.app._media_error(msg)
 
     def set_muted(self, muted):
         self.muted = muted
@@ -1245,6 +1260,9 @@ class DialApp:
         log(f"[hub] ice: {state}")
         self.resp_q.put(("peer_state", state))
 
+    def _media_error(self, msg):
+        self.resp_q.put(("peer_error", msg))
+
     def on_call_ended(self, reason):
         self.in_call = False
         self.incoming = None
@@ -1398,6 +1416,11 @@ class DialApp:
             elif state == "failed":
                 self._cancel_conn_timer()
                 self._log("соединение не удалось")
+        elif kind == "peer_error":
+            _, msg = item
+            self._log("медиа: " + msg)
+            if self.in_call and not self._peer_connected:
+                self.call_status.set("Ошибка медиа: " + msg)
         elif kind == "progress":
             _, msg = item
             total = msg.get("total") or 100
