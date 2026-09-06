@@ -41,19 +41,43 @@ def _bundled_plugin_dirs():
     return []
 
 
-def ensure_bundled_plugins():
-    """Регистрируем плагины бандла внутрипроцессно (scan_path), минуя внешний
-    gst-plugin-scanner и кэшированный реестр — на frozen Windows это надёжно."""
+def ensure_bundled_plugins(timeout=60):
+    """Дождаться фоновой регистрации бандл-плагинов (return True, если webrtcbin есть).
+    На Linux/в venv скана нет — возвращает False, системные плагины работают сами."""
+    if getattr(sys, "frozen", False) and sys.platform == "win32":
+        _gst_scan.wait(timeout)
+    return _gst_scan_ok[0]
+
+
+# --- фоновая регистрация плагинов бандла (frozen Windows) ---
+# scan_path грузит plugin-DLL прямо в процесс (минуя внешний gst-plugin-scanner,
+# который в frozen-приложении не находит DLL). Делаем это в отдельном потоке,
+# чтобы долгая загрузка не блокировала GLib/UI-поток.
+_gst_scan = threading.Event()
+_gst_scan_ok = [False]
+
+
+def _scan_bundled_plugins():
     try:
-        for d in _bundled_plugin_dirs():
+        dirs = _bundled_plugin_dirs()
+        if not dirs:
+            return
+        for d in dirs:
+            print(f"[webrtc] scan_path: {d}", flush=True)
             Gst.Registry.get().scan_path(d)
         feats = Gst.Registry.get().get_feature_list(Gst.ElementFactory)
-        ok = any(f.name == "webrtcbin" for f in feats)
-        print(f"[webrtc] scan_path: factories={len(feats)} webrtcbin={ok}", flush=True)
-        return ok
+        _gst_scan_ok[0] = any(f.name == "webrtcbin" for f in feats)
+        print(f"[webrtc] scanned: factories={len(feats)} webrtcbin={_gst_scan_ok[0]}",
+              flush=True)
     except Exception as e:
-        print(f"[webrtc] scan_path сбой: {e!r}", flush=True)
-        return False
+        print(f"[webrtc] scan сбой: {e!r}", flush=True)
+    finally:
+        _gst_scan.set()
+
+
+if sys.platform == "win32" and getattr(sys, "frozen", False):
+    threading.Thread(target=_scan_bundled_plugins, daemon=True,
+                     name="gstreamer-scan").start()
 
 
 class GlibRunner:
