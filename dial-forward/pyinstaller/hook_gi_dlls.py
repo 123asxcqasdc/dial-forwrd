@@ -15,6 +15,27 @@ import sys
 import tempfile
 
 if sys.platform == "win32" and getattr(sys, "frozen", False):
+    # --- GUI app без консоли: GStreamer-WARNING про сканер/плагины иначе не видны.
+    # Дублируем stderr/stdout в лог под USERPROFILE, при старте обрезаем до куска.
+    try:
+        _log_dir = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        _logp = os.path.join(_log_dir, "dialforward.log")
+        if os.path.exists(_logp) and os.path.getsize(_logp) > 2_000_000:
+            try:
+                os.replace(_logp, _logp + ".1")
+            except OSError:
+                pass
+        _fd = os.open(_logp, os.O_CREAT | os.O_WRONLY | os.O_APPEND)
+        os.dup2(_fd, 2)
+        os.dup2(_fd, 1)
+        os.close(_fd)
+        sys.stdout = os.fdopen(1, "a", encoding="utf-8", errors="replace")
+        sys.stderr = sys.stdout
+        print("=== DialForward boot ===", flush=True)
+    except OSError:
+        pass
+
+if sys.platform == "win32" and getattr(sys, "frozen", False):
     # PyInstaller 6.x (onedir) кладёт данные в <dist>/_internal, старые — рядом
     # с exe. Ищем по всем кандидатам.
     bases = [b for b in (getattr(sys, "_MEIPASS", None),

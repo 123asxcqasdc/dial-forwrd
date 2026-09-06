@@ -106,6 +106,23 @@ class WebRtcPeer:
         finally:
             self._built.set()
 
+    def _register_diag(self):
+        """Собрать отчёт о состоянии GStreamer-регистра для диагностики Windows."""
+        try:
+            from gi.repository import Gst as _Gst
+            reg = _Gst.Registry.get()
+            feats = reg.get_feature_list(_Gst.ElementFactory)
+            names = sorted(f.name for f in feats)
+            cnt = len(names)
+            webrtc_ok = "webrtcbin" in names
+        except Exception as e:
+            return f"registry-error={e!r}"
+        env = {k: os.environ.get(k) for k in
+               ("GST_PLUGIN_PATH", "GST_PLUGIN_SCANNER", "GI_TYPELIB_PATH",
+                "PYGI_DLL_DIRS", "GST_REGISTRY_1_0")}
+        return (f"Gst={_Gst.version_string()} factories={cnt} webrtcbin={webrtc_ok} "
+                f"env={ {k: v for k, v in env.items() if v is not None} }")
+
     def _do_build_pipeline(self):
         pipeline = Gst.Pipeline.new(f"{self.name}-pipeline")
         webrtc = Gst.ElementFactory.make("webrtcbin", "webrtc")
@@ -114,7 +131,8 @@ class WebRtcPeer:
                   f"GST_PLUGIN_PATH={os.environ.get('GST_PLUGIN_PATH')} "
                   f"SCANNER={os.environ.get('GST_PLUGIN_SCANNER')} "
                   f"GST_VERSION={Gst.version_string()}", flush=True)
-            raise RuntimeError("no such element 'webrtcbin' (плагин GStreamer не загрузился)")
+            raise RuntimeError("no such element 'webrtcbin' "
+                               f"(плагин GStreamer не загрузился). {self._register_diag()}")
         webrtc.set_property("name", self.name)
         webrtc.set_property("bundle-policy", 2)  # max-bundle
         # STUN: иначе из-за NAT только host/mDNS-кандидаты, между машинами не связаться
