@@ -9,6 +9,7 @@ on_ice_candidate, on_connection_state) вызываются в GLib-потоке
 глue должен сам переносить их в свой контекст.
 """
 import threading
+import os
 
 import gi
 gi.require_version('Gst', '1.0')
@@ -108,6 +109,12 @@ class WebRtcPeer:
     def _do_build_pipeline(self):
         pipeline = Gst.Pipeline.new(f"{self.name}-pipeline")
         webrtc = Gst.ElementFactory.make("webrtcbin", "webrtc")
+        if webrtc is None:
+            print(f"[{self.name}] webrtcbin НЕ СОЗДАН. "
+                  f"GST_PLUGIN_PATH={os.environ.get('GST_PLUGIN_PATH')} "
+                  f"SCANNER={os.environ.get('GST_PLUGIN_SCANNER')} "
+                  f"GST_VERSION={Gst.version_string()}", flush=True)
+            raise RuntimeError("no such element 'webrtcbin' (плагин GStreamer не загрузился)")
         webrtc.set_property("name", self.name)
         webrtc.set_property("bundle-policy", 2)  # max-bundle
         # STUN: иначе из-за NAT только host/mDNS-кандидаты, между машинами не связаться
