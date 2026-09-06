@@ -15,17 +15,17 @@
                 <Control Id="Bitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="234" TabSkip="no" Text="!(loc.WelcomeDlgBitmap)" />
                 <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Disabled="yes" Text="!(loc.WixUIBack)" />
                 <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
-                <Control Id="Description" Type="Text" X="135" Y="80" Width="220" Height="60" Transparent="yes" NoPrefix="yes" Text="!(loc.WelcomeDlgDescription)" >
+                <Control Id="Description" Type="Text" X="175" Y="80" Width="180" Height="60" Transparent="yes" NoPrefix="yes" Text="!(loc.WelcomeDlgDescription)" >
                     <Condition Action="show">NOT Installed OR NOT PATCH</Condition>
                     <Condition Action="hide">Installed AND PATCH</Condition>
                 </Control>
-                <Control Id="PatchDescription" Type="Text" X="135" Y="80" Width="220" Height="60" Transparent="yes" NoPrefix="yes" Text="!(loc.WelcomeUpdateDlgDescriptionUpdate)" >
+                <Control Id="PatchDescription" Type="Text" X="175" Y="80" Width="180" Height="60" Transparent="yes" NoPrefix="yes" Text="!(loc.WelcomeUpdateDlgDescriptionUpdate)" >
                     <Condition Action="show">Installed AND PATCH</Condition>
                     <Condition Action="hide">NOT Installed OR NOT PATCH</Condition>
                 </Control>
-                <Control Id="Title" Type="Text" X="135" Y="20" Width="220" Height="60" Transparent="yes" NoPrefix="yes" Text="!(loc.WelcomeDlgTitle)" />
-                <Control Id="ContactLabel" Type="Text" X="135" Y="194" Width="220" Height="17" Transparent="yes" NoPrefix="yes" Text="Связаться с автором (Telegram)" />
-                <Control Id="ContactBtn" Type="PushButton" X="135" Y="211" Width="140" Height="17" Text="Telegram: @ii_431" TabSkip="no">
+                <Control Id="Title" Type="Text" X="175" Y="20" Width="180" Height="60" Transparent="yes" NoPrefix="yes" Text="!(loc.WelcomeDlgTitle)" />
+                <Control Id="ContactLabel" Type="Text" X="175" Y="194" Width="180" Height="17" Transparent="yes" NoPrefix="yes" Text="Связаться с автором (Telegram)" />
+                <Control Id="ContactBtn" Type="PushButton" X="175" Y="211" Width="100" Height="17" Text="Telegram: @ii_431" TabSkip="no">
                     <Publish Event="DoAction" Value="DFOpenTelegram">1</Publish>
                 </Control>
             </Dialog>

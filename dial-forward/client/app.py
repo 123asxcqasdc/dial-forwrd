@@ -1660,6 +1660,35 @@ def _kill_relay():
     time.sleep(0.5)
 
 
+def _wait_telegram(on_stage=None, timeout=60):
+    """Ждёт, пока relay реально подключится к Telegram (status.connected).
+
+    Возвращает True, если Telegram доступен (не важно, авторизован ли:
+    при первом запуске без сессии приложение покажет экран входа)."""
+    def stage(text):
+        if on_stage:
+            try:
+                on_stage(text)
+            except Exception:
+                pass
+
+    stage("Подключение к Telegram...")
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
+        try:
+            st = asyncio.run(RelayClient(WS_URL).cmd("status"))
+        except Exception as e:
+            st = None
+            log(f"[app] status: {type(e).__name__}: {e}")
+        if st and st.get("connected"):
+            log("[app] telegram подключён")
+            stage("Готово")
+            return True
+        time.sleep(2)
+    log(f"[app] нет подключения к Telegram за {timeout}с")
+    return False
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="Dial Forward")
@@ -1686,13 +1715,15 @@ def main():
 
     splash = _Splash(root)
     ready = threading.Event()
-    app_holder = {}
+    app_holder = {"tg_ok": False}
 
     def worker():
         try:
             _ensure_relay(on_stage=splash.set_stage_from_thread)
+            app_holder["tg_ok"] = _wait_telegram(on_stage=splash.set_stage_from_thread)
         except Exception as e:
             log(f"[app] ошибка при старте: {e!r}")
+            app_holder["tg_ok"] = False
         finally:
             ready.set()
 
@@ -1704,6 +1735,19 @@ def main():
             root.after(50, poll)
             return
         splash.close()
+        if not app_holder.get("tg_ok"):
+            log("[app] нет соединения с Telegram — закрываюсь")
+            try:
+                messagebox.showerror(
+                    "Dial Forward",
+                    "Не удалось подключиться к Telegram.\n"
+                    "Проверьте интернет и запустите приложение снова.",
+                    parent=root)
+            except Exception:
+                pass
+            app_holder["failed"] = True
+            root.destroy()
+            return
         app_holder["app"] = DialApp(
             root, auto_call=(args.call or "").lstrip("@") or None,
             auto_answer=args.auto_answer,
@@ -1714,7 +1758,9 @@ def main():
     root.after(50, poll)
     root.mainloop()
     app = app_holder.get("app")
-    return app.restart_code if app else 0
+    if not app:
+        return 1 if app_holder.get("failed") else 0
+    return app.restart_code
 
 
 if __name__ == "__main__":

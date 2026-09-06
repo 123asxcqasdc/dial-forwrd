@@ -14,12 +14,12 @@
                     <Publish Event="DoAction" Value="DFOpenTelegram">1</Publish>
                 </Control>
                 <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
-                <Control Id="Description" Type="Text" X="135" Y="70" Width="220" Height="40" Transparent="yes" NoPrefix="yes" Text="!(loc.ExitDialogDescription)" />
-                <Control Id="Title" Type="Text" X="135" Y="20" Width="220" Height="60" Transparent="yes" NoPrefix="yes" Text="!(loc.ExitDialogTitle)" />
-                <Control Id="OptionalText" Type="Text" X="135" Y="110" Width="220" Height="80" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="[WIXUI_EXITDIALOGOPTIONALTEXT]">
+                <Control Id="Description" Type="Text" X="175" Y="70" Width="180" Height="40" Transparent="yes" NoPrefix="yes" Text="!(loc.ExitDialogDescription)" />
+                <Control Id="Title" Type="Text" X="175" Y="20" Width="180" Height="60" Transparent="yes" NoPrefix="yes" Text="!(loc.ExitDialogTitle)" />
+                <Control Id="OptionalText" Type="Text" X="175" Y="110" Width="180" Height="80" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="[WIXUI_EXITDIALOGOPTIONALTEXT]">
                     <Condition Action="show">WIXUI_EXITDIALOGOPTIONALTEXT AND NOT Installed</Condition>
                 </Control>
-                <Control Id="OptionalCheckBox" Type="CheckBox" X="135" Y="190" Width="220" Height="40" Hidden="yes" Property="WIXUI_EXITDIALOGOPTIONALCHECKBOX" CheckBoxValue="1" Text="[WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT]">
+                <Control Id="OptionalCheckBox" Type="CheckBox" X="175" Y="190" Width="180" Height="40" Hidden="yes" Property="WIXUI_EXITDIALOGOPTIONALCHECKBOX" CheckBoxValue="1" Text="[WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT]">
                     <Condition Action="show">WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT AND NOT Installed</Condition>
                 </Control>
             </Dialog>
