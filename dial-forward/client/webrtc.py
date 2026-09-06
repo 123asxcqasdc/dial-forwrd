@@ -10,6 +10,7 @@ on_ice_candidate, on_connection_state) вызываются в GLib-потоке
 """
 import threading
 import os
+import sys
 
 import gi
 gi.require_version('Gst', '1.0')
@@ -18,6 +19,41 @@ gi.require_version('GstSdp', '1.0')
 from gi.repository import Gst, GstWebRTC, GstSdp, GLib
 
 Gst.init(None)
+
+
+def _bundled_plugin_dirs():
+    """Директории с GStreamer-плагинами в бандле (frozen Windows). В dev/Linux —
+    системные пути, здесь не вмешиваемся."""
+    if getattr(sys, "frozen", False) and sys.platform == "win32":
+        dirs = []
+        for var in ("GST_PLUGIN_PATH", "GST_PLUGIN_PATH_1_0"):
+            envp = os.environ.get(var)
+            if envp:
+                dirs += [p for p in envp.split(os.pathsep) if os.path.isdir(p)]
+        if not dirs:
+            for base in filter(None, (getattr(sys, "_MEIPASS", None),
+                                      os.path.dirname(sys.executable))):
+                for pkg in ("gstreamer_plugins", "gstreamer_libs"):
+                    d = os.path.join(base, pkg, "lib", "gstreamer-1.0")
+                    if os.path.isdir(d):
+                        dirs.append(d)
+        return dirs
+    return []
+
+
+def ensure_bundled_plugins():
+    """Регистрируем плагины бандла внутрипроцессно (scan_path), минуя внешний
+    gst-plugin-scanner и кэшированный реестр — на frozen Windows это надёжно."""
+    try:
+        for d in _bundled_plugin_dirs():
+            Gst.Registry.get().scan_path(d)
+        feats = Gst.Registry.get().get_feature_list(Gst.ElementFactory)
+        ok = any(f.name == "webrtcbin" for f in feats)
+        print(f"[webrtc] scan_path: factories={len(feats)} webrtcbin={ok}", flush=True)
+        return ok
+    except Exception as e:
+        print(f"[webrtc] scan_path сбой: {e!r}", flush=True)
+        return False
 
 
 class GlibRunner:
@@ -92,6 +128,7 @@ class WebRtcPeer:
             self._built.set()
             return
         try:
+            ensure_bundled_plugins()
             self._do_build_pipeline()
         except Exception as e:
             import traceback
@@ -125,14 +162,15 @@ class WebRtcPeer:
 
     def _do_build_pipeline(self):
         pipeline = Gst.Pipeline.new(f"{self.name}-pipeline")
-        webrtc = Gst.ElementFactory.make("webrtcbin", "webrtc")
+        try:
+            webrtc = Gst.ElementFactory.make("webrtcbin", "webrtc")
+        except Exception as e:
+            raise RuntimeError(f"no such element 'webrtcbin' ({e!r}). "
+                               f"{self._register_diag()}")
         if webrtc is None:
-            print(f"[{self.name}] webrtcbin НЕ СОЗДАН. "
-                  f"GST_PLUGIN_PATH={os.environ.get('GST_PLUGIN_PATH')} "
-                  f"SCANNER={os.environ.get('GST_PLUGIN_SCANNER')} "
-                  f"GST_VERSION={Gst.version_string()}", flush=True)
             raise RuntimeError("no such element 'webrtcbin' "
-                               f"(плагин GStreamer не загрузился). {self._register_diag()}")
+                               "(плагин GStreamer не загрузился). "
+                               f"{self._register_diag()}")
         webrtc.set_property("name", self.name)
         webrtc.set_property("bundle-policy", 2)  # max-bundle
         # STUN: иначе из-за NAT только host/mDNS-кандидаты, между машинами не связаться

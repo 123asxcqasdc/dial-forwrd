@@ -102,3 +102,10 @@ if sys.platform == "win32" and getattr(sys, "frozen", False):
         os.environ["GST_REGISTRY_1_0"] = reg
     except OSError:
         pass
+
+    print(f"[hook] MEIPASS={getattr(sys, '_MEIPASS', '')}", flush=True)
+    print(f"[hook] GST_PLUGIN_PATH={os.environ.get('GST_PLUGIN_PATH')}", flush=True)
+    print(f"[hook] SCANNER={os.environ.get('GST_PLUGIN_SCANNER')}", flush=True)
+    print(f"[hook] TYPELIB={os.environ.get('GI_TYPELIB_PATH')}", flush=True)
+    for d in (os.environ.get('GST_PLUGIN_PATH') or '').split(os.pathsep):
+        print(f"[hook] plugin_dir_exists {d} -> {os.path.isdir(d)}", flush=True)
