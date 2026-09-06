@@ -329,6 +329,7 @@ class Relay:
         self.client = None
         self.clients = set()
         self.self_id = None
+        self.me = None
         self.phone = None
         self.code_hash = None
         self.calls = {}
@@ -465,6 +466,7 @@ class Relay:
     async def after_login(self):
         me = await self._retry(self.client.get_me)
         self.self_id = me.id
+        self.me = me
         self.qr = None
         self.qr_refresh_count = 0
         log.info("logged in as %s (%s)", me.first_name, me.id)
@@ -507,12 +509,15 @@ class Relay:
     # ---- команды ----
 
     async def status(self):
+        me = self.me
         return {
             "api_id": self.keys["api_id"],
             "source": self.keys.get("source"),
             "self_id": self.self_id,
             "authorized": self.self_id is not None,
             "connected": bool(self.client and self.client.is_connected()),
+            "first_name": getattr(me, "first_name", None),
+            "username": getattr(me, "username", None),
             "version": _relay_version(),
         }
 
@@ -614,6 +619,7 @@ class Relay:
             except Exception as e:
                 log.warning("log_out: %s", e)
         self.self_id = None
+        self.me = None
         self.qr = None
         self.qr_refresh_count = 0
         self._last_conn_state = None

@@ -66,7 +66,7 @@ class _Splash:
         self.win.attributes("-topmost", True)
         bg = "#f5f5f5"
         self.win.configure(bg=bg)
-        w, h = 380, 170
+        w, h = 380, 200
         x = (self.win.winfo_screenwidth() - w) // 2
         y = (self.win.winfo_screenheight() - h) // 2
         self.win.geometry(f"{w}x{h}+{x}+{y}")
@@ -86,16 +86,38 @@ class _Splash:
 
     def _icon_photo(self):
         base = _res("icons")
-        for name in ("dial_forward.png", "dial_forward_64.png"):
-            path = os.path.join(base, name)
-            if os.path.isfile(path):
-                try:
-                    img = tk.PhotoImage(file=path)
-                    self._icon_ref = img
-                    return img
-                except tk.TclError:
-                    continue
-        return None
+        path64 = os.path.join(base, "dial_forward_64.png")
+        if os.path.isfile(path64):
+            try:
+                img = tk.PhotoImage(file=path64)
+                self._icon_ref = img
+                return img
+            except tk.TclError:
+                pass
+        # большого 64-соседа нет — берём dial_forward.png, но уменьшаем,
+        # чтобы логотип не «съедал» всё окно сплеша
+        path = os.path.join(base, "dial_forward.png")
+        if not os.path.isfile(path):
+            return None
+        try:
+            import base64 as _b64
+            import io as _io
+            from PIL import Image as _PILImage
+            im = _PILImage.open(path).convert("RGBA")
+            if max(im.size) > 96:
+                im.thumbnail((96, 96), _PILImage.Resampling.LANCZOS)
+            buf = _io.BytesIO()
+            im.save(buf, format="PNG")
+            self._icon_ref = tk.PhotoImage(
+                data=_b64.b64encode(buf.getvalue()).decode("ascii"))
+            return self._icon_ref
+        except Exception:
+            try:
+                img = tk.PhotoImage(file=path)
+                self._icon_ref = img
+                return img
+            except tk.TclError:
+                return None
 
     def set_stage_from_thread(self, text):
         self.stage_q.put(text)
@@ -1429,6 +1451,7 @@ class DialApp:
             if resp.get("authorized"):
                 self.self_id = resp.get("self_id")
                 self.self_name = (resp.get("first_name") or resp.get("username")
+                                  or self.self_name
                                   or str(resp.get("self_id")))
                 self.status_var.set(f"Аккаунт: {self.self_name} (id {self.self_id})")
                 self.acct_info.configure(text=f"id: {self.self_id}\nимя: {self.self_name}")
@@ -1660,11 +1683,13 @@ def _kill_relay():
     time.sleep(0.5)
 
 
-def _wait_telegram(on_stage=None, timeout=60):
+def _wait_telegram(on_stage=None, timeout=120):
     """Ждёт, пока relay реально подключится к Telegram (status.connected).
 
-    Возвращает True, если Telegram доступен (не важно, авторизован ли:
-    при первом запуске без сессии приложение покажет экран входа)."""
+    Холодный первый запуск (проба DC с ретраями) может занять больше минуты,
+    поэтому таймаут щедрый; при недоступности Telegram всё равно завершается
+    ошибкой. Возвращает True при доступности Telegram (не важно, авторизован ли:
+    без сессии приложение покажет экран входа)."""
     def stage(text):
         if on_stage:
             try:

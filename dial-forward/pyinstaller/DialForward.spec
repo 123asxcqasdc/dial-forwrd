@@ -59,6 +59,7 @@ gst_datas = [d for d in gst_datas if _keep(d[0])]
 shared_datas = gst_datas + [
     ("../VERSION", "."),
     ("../icons/dial_forward.png", "icons"),
+    ("../icons/dial_forward_64.png", "icons"),
 ]
 shared_bins = gst_bins
 
