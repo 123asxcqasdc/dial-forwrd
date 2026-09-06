@@ -791,7 +791,19 @@ class Relay:
 
     async def dialogs(self):
         out = []
-        async for d in self.client.iter_dialogs():
+        it = self.client.iter_dialogs()
+        total = None
+        seen = 0
+        async for d in it:
+            seen += 1
+            if it.total is not None:
+                total = it.total
+            if total is not None and total > 0:
+                await self.broadcast({
+                    "event": "dialog_progress",
+                    "current": min(seen, total),
+                    "total": total,
+                })
             e = d.entity
             if hasattr(e, "first_name"):
                 out.append({
@@ -810,6 +822,11 @@ class Relay:
                     "title": getattr(e, "title", ""),
                     "participants": getattr(e, "participants_count", None),
                 })
+        await self.broadcast({
+            "event": "dialog_progress",
+            "current": seen or 0,
+            "total": max(seen, total or 0, 1),
+        })
         return {"dialogs": out}
 
     async def send_file(self, chat_id, path):

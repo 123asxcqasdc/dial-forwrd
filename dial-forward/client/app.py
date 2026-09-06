@@ -52,6 +52,70 @@ def _res(*parts):
     return os.path.join(_here_dir(), *parts)
 
 
+class _Splash:
+    """Окно-сплеш при запуске: заголовок и этапы подготовки (relay и т.п.).
+
+    Этапы приходят из фонового потока через queue; tk-поток обновляет
+    окно в цикле after()."""
+
+    def __init__(self, root):
+        self.root = root
+        self.stage_q = queue.Queue()
+        self.win = tk.Toplevel(root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        bg = "#f5f5f5"
+        self.win.configure(bg=bg)
+        w, h = 380, 170
+        x = (self.win.winfo_screenwidth() - w) // 2
+        y = (self.win.winfo_screenheight() - h) // 2
+        self.win.geometry(f"{w}x{h}+{x}+{y}")
+        self.win.grid_columnconfigure(0, weight=1)
+
+        icon = self._icon_photo()
+        if icon is not None:
+            tk.Label(self.win, image=icon, bg=bg).grid(row=0, pady=(16, 4))
+        tk.Label(self.win, text="Запуск Dial Forward",
+                 font=("Sans", 15, "bold"), bg=bg).grid(row=1, pady=(0, 6))
+        self.stage = tk.StringVar(value="Подготовка...")
+        tk.Label(self.win, textvariable=self.stage, bg=bg,
+                 foreground="#555555").grid(row=2, pady=(0, 4))
+        self.pbar = ttk.Progressbar(self.win, length=300, mode="indeterminate")
+        self.pbar.grid(row=3, pady=(0, 16))
+        self.pbar.start(12)
+
+    def _icon_photo(self):
+        base = _res("icons")
+        for name in ("dial_forward.png", "dial_forward_64.png"):
+            path = os.path.join(base, name)
+            if os.path.isfile(path):
+                try:
+                    img = tk.PhotoImage(file=path)
+                    self._icon_ref = img
+                    return img
+                except tk.TclError:
+                    continue
+        return None
+
+    def set_stage_from_thread(self, text):
+        self.stage_q.put(text)
+
+    def update(self):
+        try:
+            while True:
+                self.stage.set(self.stage_q.get_nowait())
+        except queue.Empty:
+            pass
+        self.root.update_idletasks()
+
+    def close(self):
+        try:
+            self.pbar.stop()
+            self.win.destroy()
+        except Exception:
+            pass
+
+
 UPDATE_BASES = [
     "https://uliigra2.c6t.ru/dial-forward/",
     "https://raw.githubusercontent.com/123asxcqasdc/uliigra2/main/dial-forward/",
@@ -250,12 +314,13 @@ class DialApp:
         self.in_call = False
         self._peer_connected = False
         self._conn_timer = None   # таймаут соединения звонка
-        self.contacts = []
         self._files_pending = 0
         self.boot_call = auto_call
         self.auto_answer = auto_answer
         self.settings = self._load_settings()
         self.progress_var = tk.StringVar(value="")
+        self._contact_view = []     # отфильтрованный список для списка
+        self._contacts_pb_max = -1  # для bar реального прогресса контактов
 
         self.relay = RelayClient(WS_URL)
         self.relay.on_signal = self._on_signal
@@ -470,6 +535,12 @@ class DialApp:
         ttk.Label(c, text="Люди, с которыми есть личные чаты\n"
                           "(Ctrl/Shift — выбор нескольких для группового звонка):",
                   wraplength=520, justify="left").pack(anchor="w", pady=4)
+        srow = ttk.Frame(c)
+        ttk.Label(srow, text="Поиск:").pack(side="left", padx=(0, 4))
+        self.contact_search = ttk.Entry(srow)
+        self.contact_search.pack(side="left", fill="x", expand=True)
+        srow.pack(fill="x", pady=(0, 4))
+        self.contact_search.bind("<KeyRelease>", lambda e: self._show_contacts())
         self.contact_list = tk.Listbox(c, height=11, selectmode="extended")
         self.contact_list.pack(fill="both", expand=True, pady=4)
         row = ttk.Frame(c)
@@ -919,11 +990,14 @@ class DialApp:
         self.progress.stop()
         self.progress.configure(mode="determinate", value=0)
         self.progress_var.set("")
+        self._contacts_pb_max = -1
 
     def _on_relay_event(self, msg):
         ev = msg.get("event")
         if ev == "progress":
             self.resp_q.put(("progress", msg))
+        elif ev == "dialog_progress":
+            self.resp_q.put(("dialog_progress", msg))
         elif ev == "conn":
             if not msg.get("connected"):
                 if self._was_connected:
@@ -1053,19 +1127,35 @@ class DialApp:
                  and not d.get("bot")]
         allowed = [d for d in users if d.get("username") or d.get("contact")]
         self.contacts = allowed
-        self.contact_list.delete(0, "end")
-        for d in self.contacts:
-            un = ("@" + d["username"]) if d.get("username") else f"(id {d['id']})"
-            self.contact_list.insert("end", f"{d.get('first_name') or d['title']}  {un}")
+        try:
+            self.contact_search.delete(0, "end")
+        except Exception:
+            pass
+        self._show_contacts()
         self._log(f"можно позвонить: {len(allowed)} из {len(users)}"
                   f" личных чатов" if users else "личных чатов нет")
         if not allowed:
             self._log("нет пользователей для звонка (нужны username или контакты)")
         self.clear_progress()
 
+    def _show_contacts(self):
+        """Показывает контакты с учётом текста поиска."""
+        q = (self.contact_search.get() or "").strip().lower()
+        view = []
+        self.contact_list.delete(0, "end")
+        for d in self.contacts:
+            name = (d.get("first_name") or d.get("title") or "").strip()
+            un = d.get("username") or ""
+            if q and q not in name.lower() and (not un or q not in un.lower()):
+                continue
+            view.append(d)
+            disp = ("@" + un) if un else f"(id {d['id']})"
+            self.contact_list.insert("end", f"{name}  {disp}")
+        self._contact_view = view
+
     def _selected_users(self):
         idx = list(self.contact_list.curselection())
-        return [self.contacts[i] for i in idx if i < len(self.contacts)]
+        return [self._contact_view[i] for i in idx if i < len(self._contact_view)]
 
     def _call_selected(self):
         users = self._selected_users()
@@ -1294,6 +1384,17 @@ class DialApp:
             self.update_progress(current, total)
             if current >= total - 1:
                 self.clear_progress()
+        elif kind == "dialog_progress":
+            _, msg = item
+            total = msg.get("total") or 0
+            current = msg.get("current") or 0
+            if total <= 0:
+                self.set_progress("Загрузка контактов...", indeterminate=True)
+                return
+            if self._contacts_pb_max != total:
+                self.set_progress("Загрузка контактов...", maximum=total)
+                self._contacts_pb_max = total
+            self.update_progress(current, total)
         elif kind == "update_avail":
             _, ver = item
             self._on_update_avail(ver)
@@ -1418,17 +1519,28 @@ def _dev_python(subprocess):
     return sys.executable
 
 
-def _ensure_relay():
-    """Поднимает relay, если он не слушает ws://127.0.0.1:4545 или устарел."""
+def _ensure_relay(on_stage=None):
+    """Поднимает relay, если он не слушает ws://127.0.0.1:4545 или устарел.
+    on_stage(text) вызывается из того же потока — для сплеша старта."""
+    def stage(text):
+        if on_stage:
+            try:
+                on_stage(text)
+            except Exception:
+                pass
+
     import subprocess
     if _ws_alive():
+        stage("Подключение к relay...")
         running = _ws_relay_version()
         expected = DialApp._local_version()
         if running is not None and running != expected:
             log(f"[app] relay {running} != ожидаемый {expected} — перезапускаю")
+            stage("Запуск Relay (новая версия)...")
             _kill_relay()
         else:
             log(f"[app] relay уже работает (v{running})")
+            stage("Готово")
             return
     base = _relay_bin_dir()
     env = None
@@ -1450,14 +1562,17 @@ def _ensure_relay():
         relay = [_dev_python(subprocess), os.path.join(base, "relay.py")]
         cwd = base
     log("[app] запускаю relay...")
+    stage("Подключение к relay...")
     p = subprocess.Popen(relay, cwd=cwd, env=env, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL)
     for _ in range(80):
         if _ws_alive():
             log("[app] relay готов")
+            stage("Готово")
             return p
         time.sleep(0.5)
     log("[app] relay не поднялся за 40с")
+    stage("Ошибка запуска relay")
     try:
         p.terminate()
     except Exception:
@@ -1562,18 +1677,44 @@ def main():
         notify_running_app()
         return 0
 
-    _ensure_relay()
-
     root = tk.Tk()
     try:
         ttk.Style().theme_use("clam")
     except tk.TclError:
         pass
-    app = DialApp(root, auto_call=(args.call or "").lstrip("@") or None,
-                  auto_answer=args.auto_answer,
-                  start_minimized=args.minimized, lock_srv=lock)
+    root.withdraw()
+
+    splash = _Splash(root)
+    ready = threading.Event()
+    app_holder = {}
+
+    def worker():
+        try:
+            _ensure_relay(on_stage=splash.set_stage_from_thread)
+        except Exception as e:
+            log(f"[app] ошибка при старте: {e!r}")
+        finally:
+            ready.set()
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def poll():
+        splash.update()
+        if not ready.is_set():
+            root.after(50, poll)
+            return
+        splash.close()
+        app_holder["app"] = DialApp(
+            root, auto_call=(args.call or "").lstrip("@") or None,
+            auto_answer=args.auto_answer,
+            start_minimized=args.minimized, lock_srv=lock)
+        if not args.minimized:
+            root.deiconify()
+
+    root.after(50, poll)
     root.mainloop()
-    return app.restart_code
+    app = app_holder.get("app")
+    return app.restart_code if app else 0
 
 
 if __name__ == "__main__":
