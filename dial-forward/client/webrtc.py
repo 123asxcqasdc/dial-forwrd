@@ -50,34 +50,90 @@ def ensure_bundled_plugins(timeout=60):
 
 
 # --- фоновая регистрация плагинов бандла (frozen Windows) ---
-# scan_path грузит plugin-DLL прямо в процесс (минуя внешний gst-plugin-scanner,
-# который в frozen-приложении не находит DLL). Делаем это в отдельном потоке,
-# чтобы долгая загрузка не блокировала GLib/UI-поток.
+# Плагины грузим пофайлово (Gst.Plugin.load_file) прямо в процесс, минуя внешний
+# gst-plugin-scanner, который в frozen-приложении не находит DLL. Процесс вызывается
+# приложением со сплешем (setup_plugin_import), т.к. даёт реальный прогресс.
+# Первый запуск: файла реестра нет -> импорт-цикл с прогрессом, GStreamer сам
+# сохранит реестр при выходе. Повторные запуски: реестр подхватывается из кэша
+# при Gst.init, импорт пропускается.
 _gst_scan = threading.Event()
 _gst_scan_ok = [False]
+_import_started = False
+_import_lock = threading.Lock()
 
 
-def _scan_bundled_plugins():
+def _plugin_files():
+    files = []
+    for d in _bundled_plugin_dirs():
+        try:
+            for n in sorted(os.listdir(d)):
+                if n.lower().endswith(".dll"):
+                    files.append(os.path.join(d, n))
+        except OSError:
+            pass
+    return files
+
+
+def _scan_bundled_plugins(on_progress=None):
     try:
-        dirs = _bundled_plugin_dirs()
-        if not dirs:
-            return
-        for d in dirs:
-            print(f"[webrtc] scan_path: {d}", flush=True)
-            Gst.Registry.get().scan_path(d)
+        files = _plugin_files()
+        total = len(files)
+        for i, f in enumerate(files, 1):
+            try:
+                Gst.Plugin.load_file(f)
+            except Exception:
+                pass
+            if on_progress:
+                try:
+                    on_progress(i, total)
+                except Exception:
+                    pass
         feats = Gst.Registry.get().get_feature_list(Gst.ElementFactory)
         _gst_scan_ok[0] = any(f.name == "webrtcbin" for f in feats)
-        print(f"[webrtc] scanned: factories={len(feats)} webrtcbin={_gst_scan_ok[0]}",
-              flush=True)
+        print(f"[webrtc] импорт библиотек: {total} файлов, "
+              f"factories={len(feats)} webrtcbin={_gst_scan_ok[0]}", flush=True)
     except Exception as e:
-        print(f"[webrtc] scan сбой: {e!r}", flush=True)
+        print(f"[webrtc] импорт библиотек сбой: {e!r}", flush=True)
     finally:
         _gst_scan.set()
+        if on_progress:
+            try:
+                on_progress(total, total)
+            except Exception:
+                pass
 
 
-if sys.platform == "win32" and getattr(sys, "frozen", False):
-    threading.Thread(target=_scan_bundled_plugins, daemon=True,
-                     name="gstreamer-scan").start()
+def setup_plugin_import(on_progress=None):
+    """Старт импорта GStreamer-библиотек из бандла (frozen Windows), из app после
+    создания сплеша. on_progress(done, total) вызывается из фонового потока."""
+    global _import_started
+    with _import_lock:
+        if _import_started:
+            return
+        _import_started = True
+
+    if not (getattr(sys, "frozen", False) and sys.platform == "win32"):
+        _gst_scan.set()
+        return
+
+    # Реестр уже подхвачен GStreamer из кэша — импорт не нужен.
+    try:
+        feats = Gst.Registry.get().get_feature_list(Gst.ElementFactory)
+        if any(f.name == "webrtcbin" for f in feats):
+            _gst_scan_ok[0] = True
+            print("[webrtc] библиотеки импортированы (кэш реестра)", flush=True)
+            _gst_scan.set()
+            if on_progress:
+                try:
+                    on_progress(1, 1)
+                except Exception:
+                    pass
+            return
+    except Exception:
+        pass
+
+    threading.Thread(target=_scan_bundled_plugins, args=(on_progress,),
+                     daemon=True, name="gstreamer-import").start()
 
 
 class GlibRunner:
@@ -152,7 +208,10 @@ class WebRtcPeer:
             self._built.set()
             return
         try:
-            ensure_bundled_plugins()
+            if getattr(sys, "frozen", False) and sys.platform == "win32":
+                if not ensure_bundled_plugins():
+                    raise RuntimeError(
+                        "бандл-плагины не импортированы: нет элемента webrtcbin")
             self._do_build_pipeline()
         except Exception as e:
             import traceback

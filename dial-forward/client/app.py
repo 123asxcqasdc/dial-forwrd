@@ -30,7 +30,7 @@ for _n in ("stdout", "stderr"):
 
 from call import CallSession, capture_loop, run_async
 from relay_client import RelayClient
-from webrtc import WebRtcPeer
+from webrtc import WebRtcPeer, setup_plugin_import
 
 WS_URL = "ws://127.0.0.1:4545"
 CLIENT_ID = "dialfwd-gui-" + secrets.token_hex(3)
@@ -61,6 +61,7 @@ class _Splash:
     def __init__(self, root):
         self.root = root
         self.stage_q = queue.Queue()
+        self.progress_q = queue.Queue()
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
@@ -80,9 +81,9 @@ class _Splash:
         self.stage = tk.StringVar(value="Подготовка...")
         tk.Label(self.win, textvariable=self.stage, bg=bg,
                  foreground="#555555").grid(row=2, pady=(0, 4))
-        self.pbar = ttk.Progressbar(self.win, length=300, mode="indeterminate")
+        self.pbar = ttk.Progressbar(self.win, length=300, mode="determinate",
+                                    maximum=100)
         self.pbar.grid(row=3, pady=(0, 16))
-        self.pbar.start(12)
 
     def _icon_photo(self):
         base = _res("icons")
@@ -122,10 +123,21 @@ class _Splash:
     def set_stage_from_thread(self, text):
         self.stage_q.put(text)
 
+    def set_progress_from_thread(self, pct, text=None):
+        self.progress_q.put((int(max(0, min(100, pct))), text))
+
     def update(self):
         try:
             while True:
                 self.stage.set(self.stage_q.get_nowait())
+        except queue.Empty:
+            pass
+        try:
+            while True:
+                pct, text = self.progress_q.get_nowait()
+                self.pbar["value"] = pct
+                if text is not None:
+                    self.stage.set(text)
         except queue.Empty:
             pass
         self.root.update_idletasks()
@@ -1764,6 +1776,15 @@ def main():
     splash = _Splash(root)
     ready = threading.Event()
     app_holder = {"tg_ok": False}
+
+    def _import_progress(done, total):
+        if total <= 0:
+            return
+        pct = int(100 * done // total)
+        splash.set_progress_from_thread(
+            pct, f"Импорт библиотек (сканирование) — {pct}%")
+
+    setup_plugin_import(on_progress=_import_progress)
 
     def worker():
         try:

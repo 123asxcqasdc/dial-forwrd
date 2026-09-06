@@ -12,7 +12,6 @@
 # (=> "no such element 'webrtcbin'") and gi can miss the typelibs.
 import os
 import sys
-import tempfile
 
 if sys.platform == "win32" and getattr(sys, "frozen", False):
     # --- GUI app без консоли: GStreamer-WARNING про сканер/плагины иначе не видны.
@@ -66,14 +65,15 @@ if sys.platform == "win32" and getattr(sys, "frozen", False):
                 return p
         return None
 
-    # --- GStreamer plugin dirs + scanner (mirror of gstreamer_libs.environment) ---
+    # --- GStreamer plugin dirs (mirror of gstreamer_libs.environment) ---
+    # ВАЖНО: GST_PLUGIN_SCANNER сознательно НЕ ставим — внешний
+    # gst-plugin-scanner в frozen Windows уходит в утиль (не находит свои DLL),
+    # его запуск вешает сканирование. Плагины грузим напрямую в процесс через
+    # Gst.Plugin.load_file() (в webrtc.setup_plugin_import) с прогрессом на сплеше.
     plugin_dirs = [p for p in (
         _under("gstreamer_libs", "lib", "gstreamer-1.0"),
         _under("gstreamer_plugins", "lib", "gstreamer-1.0"),
     ) if p]
-    scanner = (_under("gstreamer_libs", "libexec", "gstreamer-1.0",
-                      "gst-plugin-scanner.exe")
-               or _under("gstreamer_libs", "bin", "gst-plugin-scanner.exe"))
     bin_dir = _under("gstreamer_libs", "bin")
     if bin_dir:
         os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
@@ -83,9 +83,6 @@ if sys.platform == "win32" and getattr(sys, "frozen", False):
         os.environ["GST_PLUGIN_PATH_1_0"] = paths
         os.environ["GST_PLUGIN_SYSTEM_PATH"] = paths
         os.environ["GST_PLUGIN_SYSTEM_PATH_1_0"] = paths
-    if scanner:
-        os.environ["GST_PLUGIN_SCANNER"] = scanner
-        os.environ["GST_PLUGIN_SCANNER_1_0"] = scanner
 
     # --- typelibs (gstreamer_libs ships the Gst core ones; gstreamer_python the rest) ---
     typelib_dirs = [p for p in (
@@ -95,17 +92,21 @@ if sys.platform == "win32" and getattr(sys, "frozen", False):
     if typelib_dirs:
         os.environ["GI_TYPELIB_PATH"] = os.pathsep.join(typelib_dirs)
 
-    #    registry in the bundle is read-only; force a writable per-user cache
+    # --- стабильный реестр: GStreamer сам сохраняет его при выходе, поэтому
+    #     повторные запуски подхватывают плагины из кэша мгновенно (импорт —
+    #     только при первом запуске). ---
     try:
-        reg = os.path.join(tempfile.gettempdir(),
-                           f"dialforward-gst-registry-{os.getpid()}.bin")
+        regdir = os.path.join(os.environ.get("LOCALAPPDATA")
+                              or os.path.expanduser("~"), "DialForward")
+        os.makedirs(regdir, exist_ok=True)
+        reg = os.path.join(regdir, "gstreamer-registry.bin")
         os.environ["GST_REGISTRY_1_0"] = reg
-    except OSError:
-        pass
+        print(f"[hook] REGISTRY={reg} cached={os.path.exists(reg)}", flush=True)
+    except OSError as e:
+        print(f"[hook] registry path fail: {e!r}", flush=True)
 
     print(f"[hook] MEIPASS={getattr(sys, '_MEIPASS', '')}", flush=True)
     print(f"[hook] GST_PLUGIN_PATH={os.environ.get('GST_PLUGIN_PATH')}", flush=True)
-    print(f"[hook] SCANNER={os.environ.get('GST_PLUGIN_SCANNER')}", flush=True)
     print(f"[hook] TYPELIB={os.environ.get('GI_TYPELIB_PATH')}", flush=True)
     for d in (os.environ.get('GST_PLUGIN_PATH') or '').split(os.pathsep):
         print(f"[hook] plugin_dir_exists {d} -> {os.path.isdir(d)}", flush=True)
