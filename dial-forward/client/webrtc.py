@@ -167,17 +167,20 @@ class WebRtcPeer:
         return True
 
     def begin_negotiation(self):
-        self.runner.idle(self._begin_when_ready, 200)
+        self.runner.idle(self._begin_when_ready)
 
-    def _begin_when_ready(self, attempts=200):
+    def _begin_when_ready(self, retries=0):
         if self.webrtc is not None:
             self._on_negotiation_needed(self.webrtc)
             return
-        if self._build_error or attempts <= 0:
+        if self._build_error:
             print(f"[{self.name}] begin_negotiation: пайплайн не собран "
                   f"({self._build_error})", flush=True)
             return
-        GLib.timeout_add(100, lambda: self._begin_when_ready(attempts - 1))
+        if retries and retries % 50 == 0:
+            print(f"[{self.name}] ждём сборки пайплайна "
+                  f"({retries * 100 / 1000:.1f}s)...", flush=True)
+        GLib.timeout_add(100, lambda: self._begin_when_ready(retries + 1))
 
     def play(self):
         self.runner.idle(self._do_play)
@@ -237,11 +240,16 @@ class WebRtcPeer:
     def _create_offer_cb(self, promise, user_data=None, *extra):
         reply = promise.get_reply()
         if reply is None:
+            print(f"[{self.name}] create-offer: пустой reply — офер не создан",
+                  flush=True)
             self._negotiating = False
             return
         self._held.append(reply)
         desc = reply.get_value("offer")
         if desc is None:
+            print(f"[{self.name}] create-offer: нет значения offer в reply",
+                  flush=True)
+            self._negotiating = False
             return
         self._held.append(desc)
         promise2 = Gst.Promise.new_with_change_func(self._offer_set_cb, desc, None)
@@ -265,16 +273,19 @@ class WebRtcPeer:
         self.runner.idle(self._set_remote_when_ready, sdp_text,
                          GstWebRTC.WebRTCSDPType.ANSWER)
 
-    def _set_remote_when_ready(self, sdp_text, sdp_type, attempts=200):
-        if self.webrtc is None and not self._build_error and attempts > 0:
+    def _set_remote_when_ready(self, sdp_text, sdp_type, retries=0):
+        if self.webrtc is None and not self._build_error:
             self._pending_remote = (sdp_text, sdp_type)
+            if retries and retries % 50 == 0:
+                print(f"[{self.name}] ждём сборки пайплайна "
+                      f"({retries * 100 / 1000:.1f}s)...", flush=True)
             GLib.timeout_add(100, lambda: self._set_remote_when_ready(
-                *self._pending_remote, attempts - 1))
+                *self._pending_remote, retries + 1))
             return
         self._pending_remote = None
         if self.webrtc is None:
             print(f"[{self.name}] set_remote: пайплайн не собран "
-                  f"({self._build_error})", flush=True)
+                  f"({self._build_error}) — офер отброшен", flush=True)
             return
         self._do_set_remote(sdp_text, sdp_type)
 
@@ -284,6 +295,9 @@ class WebRtcPeer:
             desc = GstWebRTC.WebRTCSessionDescription.new(sdp_type, sdp)
             self._held.append(desc)
             self._remote_type = sdp_type
+            kind = "OFFER" if sdp_type == GstWebRTC.WebRTCSDPType.OFFER else "ANSWER"
+            print(f"[{self.name}] установлен удалённый {kind}: "
+                  f"{len(sdp_text)} b", flush=True)
             promise = Gst.Promise.new_with_change_func(self._remote_set_cb, None, None)
             self.webrtc.emit("set-remote-description", desc, promise)
         except Exception as e:
@@ -319,10 +333,14 @@ class WebRtcPeer:
     def _create_answer_cb(self, promise, user_data=None, *extra):
         reply = promise.get_reply()
         if reply is None:
+            print(f"[{self.name}] create-answer: пустой reply — "
+                  f"answer не создан", flush=True)
             return
         self._held.append(reply)
         desc = reply.get_value("answer")
         if desc is None:
+            print(f"[{self.name}] create-answer: нет значения answer в reply",
+                  flush=True)
             return
         self._held.append(desc)
         promise2 = Gst.Promise.new_with_change_func(self._answer_set_cb, desc, None)

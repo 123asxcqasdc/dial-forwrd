@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import sys
 import time
 
@@ -45,6 +46,48 @@ def _relay_version():
         except OSError:
             continue
     return "0"
+
+
+# ---------- сессия Telegram в постоянном каталоге данных ----------
+
+SESSION_NAMES = ("tgrtc.session", "tgrtc.session-journal",
+                 "tgrtc.session-shm", "tgrtc.session-wal")
+
+
+def _session_dir():
+    """Каталог сессии. Windows-инсталлер задаёт DIAL_FORWARD_DATA вне INSTALLDIR
+    (иначе MSI-апдейт затирал бы сессию). В dev — каталог relay."""
+    d = os.environ.get("DIAL_FORWARD_DATA", "").strip()
+    if not d:
+        return os.getcwd()
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError as e:
+        log.warning("не могу создать DIAL_FORWARD_DATA %s: %s", d, e)
+        return os.getcwd()
+    return d
+
+
+def _migrate_session_if_needed(d):
+    """Копирует старую сессию из каталога relay (CWD) в каталог данных —
+    чтобы после апдейта не пришлось входить заново."""
+    if d == os.getcwd() or os.path.exists(os.path.join(d, "tgrtc.session")):
+        return
+    if not os.path.exists(os.path.join(os.getcwd(), "tgrtc.session")):
+        return
+    moved = []
+    for name in SESSION_NAMES:
+        src = os.path.join(os.getcwd(), name)
+        dst = os.path.join(d, name)
+        if os.path.exists(src) and not os.path.exists(dst):
+            try:
+                shutil.copy2(src, dst)
+                moved.append(name)
+            except OSError as e:
+                log.warning("миграция сессии %s: %s", name, e)
+    if moved:
+        log.info("сессия перенесена из %s в %s: %s", os.getcwd(), d,
+                 ", ".join(moved))
 
 
 # ---------- ключи (без tdata и без Telegram Desktop) ----------
@@ -294,6 +337,9 @@ class Relay:
         self.qr_refresh_count = 0
         self._last_conn_state = None   # для broadcast только при изменении
         self._last_liveness_t = 0.0    # последняя реальная проверка Telegram
+        self.session_dir = _session_dir()
+        self.session_path = os.path.join(self.session_dir, "tgrtc.session")
+        _migrate_session_if_needed(self.session_dir)
 
     async def start(self):
         asyncio.create_task(self._connection_loop())
@@ -367,7 +413,7 @@ class Relay:
                 log.info("создаю TelegramClient (dc %s %s:%s ipv6=%s)",
                          dc_id, ip, port, ipv6)
                 self.client = TelegramClient(
-                    "tgrtc.session", self.keys["api_id"], self.keys["api_hash"],
+                    self.session_path, self.keys["api_id"], self.keys["api_hash"],
                     connection=ConnectionTcpObfuscated,
                     use_ipv6=ipv6, connection_retries=8, retry_delay=4,
                     proxy=get_session_proxy())
@@ -408,12 +454,12 @@ class Relay:
         except Exception:
             pass
         self.client = None
-        for f in ("tgrtc.session", "tgrtc.session-journal",
-                  "tgrtc.session-shm", "tgrtc.session-wal"):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
+        for d in {self.session_dir, os.getcwd()}:
+            for name in SESSION_NAMES:
+                try:
+                    os.remove(os.path.join(d, name))
+                except OSError:
+                    pass
         log.info("session reset (broken transport key)")
 
     async def after_login(self):

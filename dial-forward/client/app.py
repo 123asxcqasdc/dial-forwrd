@@ -248,6 +248,8 @@ class DialApp:
         self.hub = CallHub(self)
         self.incoming = None   # (chat_id, payload)
         self.in_call = False
+        self._peer_connected = False
+        self._conn_timer = None   # таймаут соединения звонка
         self.contacts = []
         self._files_pending = 0
         self.boot_call = auto_call
@@ -1118,6 +1120,8 @@ class DialApp:
             log(f"[hub] begin_call: {e!r}")
             self._log(f"медиа недоступно: {e}")
             self.call_status.set(f"Ошибка медиа: {e}")
+            return
+        self._start_conn_timer()
 
     def on_incoming_accepted(self):
         self.call_status.set("Соединяемся...")
@@ -1127,19 +1131,40 @@ class DialApp:
 
     def on_peer_state(self, state):
         log(f"[hub] ice: {state}")
-        if state in ("connected", "completed"):
-            self.call_status.set("Разговор")
-            self._log("разговор установлен")
-        elif state == "failed":
-            self._log("соединение не удалось")
+        self.resp_q.put(("peer_state", state))
 
     def on_call_ended(self, reason):
         self.in_call = False
         self.incoming = None
+        self._cancel_conn_timer()
         log(f"[app] {reason}")
         self._log(reason)
         self.status_var.set("Готов к звонкам")
         self._go("main")
+
+    # ---------- таймаут соединения ----------
+
+    def _start_conn_timer(self):
+        self._peer_connected = False
+        self._cancel_conn_timer()
+        self._conn_timer = self.root.after(45000, self._conn_timeout)
+
+    def _cancel_conn_timer(self):
+        if self._conn_timer is not None:
+            try:
+                self.root.after_cancel(self._conn_timer)
+            except Exception:
+                pass
+            self._conn_timer = None
+
+    def _conn_timeout(self):
+        self._conn_timer = None
+        if self._peer_connected or not self.hub.session:
+            return
+        log("[app] не удалось соединиться за 45 с")
+        self._log("не удалось соединиться за 45 с — звонок завершён")
+        if self.hub.session:
+            self.hub.end_call("звонок завершён (соединение не установлено)")
 
     # ---------- входящий звонок ----------
 
@@ -1167,6 +1192,7 @@ class DialApp:
         self.call_title.set("Звонок")
         self.call_status.set("Соединяемся...")
         self.btn_mic.configure(text="Микро: вкл")
+        self._start_conn_timer()
         self._go("call")
 
     def _decline_incoming(self):
@@ -1250,6 +1276,16 @@ class DialApp:
             _, chat_id, payload = item
             if self.hub.session and self.hub.chat_id == chat_id:
                 self.hub.handle(chat_id, 0, payload)
+        elif kind == "peer_state":
+            _, state = item
+            if state in ("connected", "completed"):
+                self._peer_connected = True
+                self._cancel_conn_timer()
+                self.call_status.set("Разговор")
+                self._log("разговор установлен")
+            elif state == "failed":
+                self._cancel_conn_timer()
+                self._log("соединение не удалось")
         elif kind == "progress":
             _, msg = item
             total = msg.get("total") or 100
@@ -1395,15 +1431,26 @@ def _ensure_relay():
             log(f"[app] relay уже работает (v{running})")
             return
     base = _relay_bin_dir()
+    env = None
     if getattr(sys, "frozen", False):
         here = os.path.dirname(sys.executable)
         relay = [os.path.join(here, "Relay.exe")]
         cwd = here
+        data = os.path.join(
+            os.environ.get("APPDATA")
+            or os.path.join(os.path.expanduser("~"), "AppData", "Roaming"),
+            "DialForward")
+        try:
+            os.makedirs(data, exist_ok=True)
+        except OSError:
+            pass
+        env = dict(os.environ)
+        env["DIAL_FORWARD_DATA"] = data
     else:
         relay = [_dev_python(subprocess), os.path.join(base, "relay.py")]
         cwd = base
     log("[app] запускаю relay...")
-    p = subprocess.Popen(relay, cwd=cwd, stdout=subprocess.DEVNULL,
+    p = subprocess.Popen(relay, cwd=cwd, env=env, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL)
     for _ in range(80):
         if _ws_alive():
