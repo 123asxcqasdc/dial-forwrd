@@ -75,8 +75,35 @@ if sys.platform == "win32" and getattr(sys, "frozen", False):
         _under("gstreamer_plugins", "lib", "gstreamer-1.0"),
     ) if p]
     bin_dir = _under("gstreamer_libs", "bin")
-    if bin_dir:
-        os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+    # Windows-загрузчик GStreamer инлочит плагины через LOAD_WITH_ALTERED_SEARCH_PATH,
+    # где зависимости ищутся ТОЛЬКО по PATH (os.add_dll_directory не помогает).
+    # Валим в PATH bin-каталоги ВСЕХ gstreamer-пакетов (как делает гstreamer_libs'
+    # setup_python_environment): gstreamer_libs/bin, gstreamer_plugins_libs/bin
+    # (там лежит nice-10.dll, без которого не грузится gstwebrtc.dll -> webrtcbin).
+    path_add = []
+    _seen_bin = set()
+    for _b in bases:
+        try:
+            _tops = os.listdir(_b)
+        except OSError:
+            continue
+        for _name in _tops:
+            _bd = os.path.join(_b, _name, "bin")
+            if not os.path.isdir(_bd) or _bd in _seen_bin:
+                continue
+            try:
+                _has_dll = any(f.lower().endswith(".dll") for f in os.listdir(_bd))
+            except OSError:
+                _has_dll = False
+            if _has_dll:
+                _seen_bin.add(_bd)
+                path_add.append(_bd)
+    if bin_dir and bin_dir not in path_add:
+        path_add.append(bin_dir)
+    if path_add:
+        os.environ["PATH"] = (os.pathsep.join(path_add) + os.pathsep +
+                              os.environ.get("PATH", ""))
+        print(f"[hook] PATH_ADD={os.pathsep.join(path_add)}", flush=True)
     if plugin_dirs:
         paths = os.pathsep.join(plugin_dirs)
         os.environ["GST_PLUGIN_PATH"] = paths
