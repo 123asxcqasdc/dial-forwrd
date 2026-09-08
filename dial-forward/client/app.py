@@ -629,7 +629,8 @@ class DialApp:
         self.btn_mic.grid(row=0, column=0, padx=4)
         ttk.Button(ctl, text="Файлы", width=13, command=self._send_files).grid(row=0, column=1, padx=4)
         ttk.Button(ctl, text="Пригласить", width=13, command=self._invite).grid(row=0, column=2, padx=4)
-        ttk.Button(ctl, text="Скачать файлы", width=13, command=self._download_files).grid(row=0, column=3, padx=4)
+        self.btn_dl = ttk.Button(ctl, text="Скачать файл", width=14,
+                                 command=self._download_last_file)
         self.btn_hangup = ttk.Button(cl, text="Завершить звонок", width=32,
                                      command=lambda: self.hub.end_call("вы завершили звонок"))
         self.btn_hangup.pack(pady=6)
@@ -1061,6 +1062,10 @@ class DialApp:
             self.resp_q.put(("progress", msg))
         elif ev == "dlfile":
             self.resp_q.put(("dlfile", msg))
+        elif ev == "file":
+            if self.hub and self.hub.chat_id \
+                    and msg.get("chat_id") == self.hub.chat_id:
+                self._refresh_dl_button()
         elif ev == "dialog_progress":
             self.resp_q.put(("dialog_progress", msg))
         elif ev == "conn":
@@ -1267,6 +1272,8 @@ class DialApp:
         self.btn_mic.configure(text="Микро: вкл")
         self.parts_list.configure(text="")
         self._go("call")
+        self._hide_dl_button()
+        self.root.after(300, self._refresh_dl_button)
         self.root.deiconify()
         self.root.lift()
         try:
@@ -1295,6 +1302,7 @@ class DialApp:
         self.in_call = False
         self.incoming = None
         self._cancel_conn_timer()
+        self._hide_dl_button()
         log(f"[app] {reason}")
         self._log(reason)
         self.status_var.set("Готов к звонкам")
@@ -1352,6 +1360,8 @@ class DialApp:
         self.btn_mic.configure(text="Микро: вкл")
         self._start_conn_timer()
         self._go("call")
+        self._hide_dl_button()
+        self.root.after(300, self._refresh_dl_button)
 
     def _decline_incoming(self):
         chat_id, _payload, _from_id, _from_name = self.incoming
@@ -1402,6 +1412,7 @@ class DialApp:
         name = os.path.basename(path)
         if resp.get("ok"):
             self._log(f"файл отправлен: {name}")
+            self._refresh_dl_button()
         else:
             self._log(f"не удалось отправить {name}: {resp.get('error')}")
         self._files_pending -= 1
@@ -1409,102 +1420,80 @@ class DialApp:
             self.clear_progress()
 
     # ---------- скачивание файлов из чата звонка ----------
+    # Кнопка «Скачать файл» видна только если в чате есть файл и скачивает
+    # последний файл в папку «Загрузки» с уведомлением об успехе.
 
-    def _download_files(self):
+    def _downloads_dir(self):
+        home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+        cands = [os.path.join(home, "Downloads"), os.path.expanduser("~/Downloads")]
+        for c in cands:
+            if os.path.isdir(c):
+                return c
+        return os.path.expanduser("~")
+
+    def _refresh_dl_button(self):
+        """Показывает/скрывает кнопку «Скачать файл» по наличию файлов в чате."""
+        if not (self.hub and self.hub.chat_id):
+            self._hide_dl_button()
+            return
+
+        def done(resp):
+            files = resp.get("files") or [] if resp.get("ok") else []
+            if files:
+                self._show_dl_button()
+            else:
+                self._hide_dl_button()
+
+        self.do_cmd({"cmd": "list_files", "chat_id": self.hub.chat_id}, on_done=done)
+
+    def _show_dl_button(self):
+        try:
+            self.btn_dl.grid(row=0, column=3, padx=4)
+        except Exception:
+            pass
+
+    def _hide_dl_button(self):
+        try:
+            self.btn_dl.grid_remove()
+        except Exception:
+            pass
+
+    def _download_last_file(self):
         if not self.hub.chat_id:
             return
-        self.set_progress("Загрузка списка файлов...", indeterminate=True)
+        self.set_progress("Ищу последний файл...", indeterminate=True)
         self.do_cmd({"cmd": "list_files", "chat_id": self.hub.chat_id},
-                    on_done=self._show_files_dialog)
+                    on_done=self._download_latest)
 
-    def _show_files_dialog(self, resp):
+    def _download_latest(self, resp):
         self.clear_progress()
-        if resp.get("error"):
-            self._log("список файлов: " + resp["error"])
-            self.status_var.set("Ошибка: " + resp["error"])
+        if not resp.get("ok"):
+            self._log("файл: " + resp.get("error", ""))
             return
         files = resp.get("files") or []
         if not files:
-            messagebox.showinfo("Dial Forward", "В чате звонка пока нет файлов")
+            self._hide_dl_button()
             return
-        win = tk.Toplevel(self.root)
-        win.title("Скачать файлы")
-        win.transient(self.root)
-        win.grab_set()
-        wrap = ttk.Frame(win, padding=8)
-        wrap.pack(fill="both", expand=True)
-        ttk.Label(wrap, text="Выберите файлы из чата звонка:").pack(
-            anchor="w", pady=(0, 4))
-        frame = ttk.Frame(wrap)
-        frame.pack(fill="both", expand=True)
-        sb = ttk.Scrollbar(frame, orient="vertical")
-        lb = tk.Listbox(frame, height=14, width=74, selectmode="extended",
-                        yscrollcommand=sb.set, activestyle="dotbox")
-        sb.config(command=lb.yview)
-        lb.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        view = []
-        for f in files:
-            size = f.get("size") or 0
-            if size >= 1 << 20:
-                sz = f"{size / (1 << 20):.1f} МБ"
-            else:
-                sz = f"{max(1, size // 1024)} КБ"
-            lb.insert("end", f"{f['name']}   [{sz}]")
-            view.append(f)
-        btns = ttk.Frame(wrap)
-        btns.pack(fill="x", pady=(8, 0))
+        latest = files[0]
+        target = self._downloads_dir()
+        self.set_progress(f"Скачивание: {latest['name']}...", indeterminate=True)
+        self.do_cmd({"cmd": "get_file", "chat_id": self.hub.chat_id,
+                     "msg_id": latest["msg_id"], "target_dir": target},
+                    on_done=lambda r, f=latest, d=target: self._file_downloaded(f, r, d))
 
-        def do_download():
-            sel = lb.curselection()
-            if not sel:
-                messagebox.showinfo("Dial Forward", "Выберите файлы", parent=win)
-                return
-            target = filedialog.askdirectory(parent=win, title="Куда сохранить файлы")
-            if not target:
-                return
-            picked = [view[i] for i in sel]
-            win.destroy()
-            self._download_picked(picked, target)
-
-        def do_all():
-            target = filedialog.askdirectory(parent=win, title="Куда сохранить файлы")
-            if not target:
-                return
-            win.destroy()
-            self._download_picked(list(files), target)
-
-        ttk.Button(btns, text="Скачать выбранные",
-                   command=do_download).pack(side="left", padx=4)
-        ttk.Button(btns, text="Скачать все", command=do_all).pack(side="left", padx=4)
-        ttk.Button(btns, text="Отмена", command=win.destroy).pack(side="right", padx=4)
-        win.wait_window()
-
-    def _download_picked(self, files, target):
-        self._dl_pending = len(files)
-        self._dl_errors = 0
-        self.set_progress("Скачивание...", indeterminate=True)
-        for f in files:
-            self.do_cmd({"cmd": "get_file", "chat_id": self.hub.chat_id,
-                         "msg_id": f["msg_id"], "target_dir": target},
-                        on_done=lambda r, f=f: self._file_downloaded(f, r))
-
-    def _file_downloaded(self, f, resp):
+    def _file_downloaded(self, f, resp, target):
         name = f.get("name") or f.get("msg_id")
         if resp.get("ok"):
-            got = resp.get("name") or name
-            size = resp.get("size") or 0
-            self._log(f"файл скачан: {got} ({size} байт)")
-        else:
-            self._dl_errors += 1
-            self._log(f"не удалось скачать {name}: {resp.get('error')}")
-        self._dl_pending -= 1
-        if self._dl_pending <= 0:
+            path = os.path.join(target, resp.get("name") or name)
+            self._log(f"файл скачан: {path}")
             self.clear_progress()
-            if self._dl_errors:
-                self.status_var.set(
-                    f"Скачано с ошибками ({self._dl_errors}) — см. логи")
-            self._dl_errors = 0
+            messagebox.showinfo("Dial Forward",
+                                f"Файл скачан:\n{path}",
+                                parent=self.root)
+        else:
+            self.clear_progress()
+            self._log(f"не удалось скачать {name}: {resp.get('error')}")
+            self.status_var.set("Ошибка скачивания: " + resp.get("error", ""))
 
     # ---------- ответы и события ----------
 

@@ -507,6 +507,12 @@ class Relay:
             "msg_id": msg.id,
             "text": msg.message,
         })
+        if getattr(msg, "media", None):
+            await self.broadcast({
+                "event": "file",
+                "chat_id": chat_id,
+                "msg_id": msg.id,
+            })
 
     async def broadcast(self, data: dict):
         if not self.clients:
