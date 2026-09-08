@@ -17,7 +17,7 @@ class RelayClient:
     def __init__(self, url="ws://127.0.0.1:4545"):
         self.url = url
         self.on_message = None   # (chat_id, from_id, msg_id, text)
-        self.on_signal = None    # (chat_id, from_id, payload)
+        self.on_signal = None    # (chat_id, from_id, payload, from_name=None)
         self.on_event = None     # любой event (dict)
         self.on_ws_state = None  # WS-соединение приёма событий: True/False
 
@@ -60,7 +60,8 @@ class RelayClient:
                                     msg.get("msg_id"), msg.get("text"))
                 payload = decode(msg.get("text") or "")
                 if payload and self.on_signal:
-                    self.on_signal(msg.get("chat_id"), msg.get("from_id"), payload)
+                    self.on_signal(msg.get("chat_id"), msg.get("from_id"), payload,
+                                   from_name=msg.get("from_name"))
             except Exception as e:
                 print(f"[relay_client] обработка сообщения: {e!r}", flush=True)
 
@@ -131,3 +132,10 @@ class RelayClient:
     async def send_signal(self, chat_id, payload):
         from protocol import encode
         return await self.cmd("send", chat_id=chat_id, text=encode(payload))
+
+    async def list_files(self, chat_id):
+        return await self.cmd("list_files", chat_id=chat_id)
+
+    async def get_file(self, chat_id, msg_id, target_dir):
+        return await self.cmd("get_file", chat_id=chat_id, msg_id=msg_id,
+                              target_dir=target_dir)

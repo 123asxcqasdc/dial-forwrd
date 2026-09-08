@@ -81,9 +81,10 @@ class _Splash:
         self.stage = tk.StringVar(value="Подготовка...")
         tk.Label(self.win, textvariable=self.stage, bg=bg,
                  foreground="#555555").grid(row=2, pady=(0, 4))
-        self.pbar = ttk.Progressbar(self.win, length=300, mode="determinate",
+        self.pbar = ttk.Progressbar(self.win, length=300, mode="indeterminate",
                                     maximum=100)
         self.pbar.grid(row=3, pady=(0, 16))
+        self.pbar.start(12)
 
     def _icon_photo(self):
         base = _res("icons")
@@ -126,6 +127,10 @@ class _Splash:
     def set_progress_from_thread(self, pct, text=None):
         self.progress_q.put((int(max(0, min(100, pct))), text))
 
+    def set_indeterminate_from_thread(self, text):
+        """Переключить индикатор на бегущую полоску (импорт закончен)."""
+        self.progress_q.put((None, text))
+
     def update(self):
         try:
             while True:
@@ -135,9 +140,17 @@ class _Splash:
         try:
             while True:
                 pct, text = self.progress_q.get_nowait()
-                self.pbar["value"] = pct
-                if text is not None:
+                if pct is None:
+                    self.pbar["mode"] = "indeterminate"
+                    self.pbar.start(12)
                     self.stage.set(text)
+                else:
+                    if self.pbar.cget("mode") != "determinate":
+                        self.pbar.stop()
+                        self.pbar["mode"] = "determinate"
+                    self.pbar["value"] = pct
+                    if text is not None:
+                        self.stage.set(text)
         except queue.Empty:
             pass
         self.root.update_idletasks()
@@ -616,6 +629,7 @@ class DialApp:
         self.btn_mic.grid(row=0, column=0, padx=4)
         ttk.Button(ctl, text="Файлы", width=13, command=self._send_files).grid(row=0, column=1, padx=4)
         ttk.Button(ctl, text="Пригласить", width=13, command=self._invite).grid(row=0, column=2, padx=4)
+        ttk.Button(ctl, text="Скачать файлы", width=13, command=self._download_files).grid(row=0, column=3, padx=4)
         self.btn_hangup = ttk.Button(cl, text="Завершить звонок", width=32,
                                      command=lambda: self.hub.end_call("вы завершили звонок"))
         self.btn_hangup.pack(pady=6)
@@ -1045,6 +1059,8 @@ class DialApp:
         ev = msg.get("event")
         if ev == "progress":
             self.resp_q.put(("progress", msg))
+        elif ev == "dlfile":
+            self.resp_q.put(("dlfile", msg))
         elif ev == "dialog_progress":
             self.resp_q.put(("dialog_progress", msg))
         elif ev == "conn":
@@ -1310,7 +1326,7 @@ class DialApp:
 
     # ---------- входящий звонок ----------
 
-    def _on_signal(self, chat_id, from_id, payload):
+    def _on_signal(self, chat_id, from_id, payload, from_name=None):
         t = payload.get("type")
         log(f"[ui] сигнал {t} (chat {chat_id})")
         if from_id and from_id == self.self_id:
@@ -1319,26 +1335,26 @@ class DialApp:
         if self.hub.session and self.hub.chat_id == chat_id:
             self.resp_q.put(("signal", chat_id, payload))
         elif t in ("offer", "ring") and not self.in_call:
-            self.resp_q.put(("incoming", chat_id, payload))
+            self.resp_q.put(("incoming", chat_id, payload, from_id, from_name))
         else:
             self.resp_q.put(("signal", chat_id, payload))
 
     def _answer_incoming(self):
         if not self.incoming:
             return
-        chat_id, payload = self.incoming
+        chat_id, payload, _from_id, from_name = self.incoming
         self.in_call = True
         self.hub.begin_call(chat_id, offerer=False)
         if payload:
             self.hub.handle(chat_id, 0, payload)
-        self.call_title.set("Звонок")
+        self.call_title.set(f"Звонок — {from_name}" if from_name else "Звонок")
         self.call_status.set("Соединяемся...")
         self.btn_mic.configure(text="Микро: вкл")
         self._start_conn_timer()
         self._go("call")
 
     def _decline_incoming(self):
-        chat_id, _ = self.incoming
+        chat_id, _payload, _from_id, _from_name = self.incoming
         self.incoming = None
         self.status_var.set("Звонок отклонён")
         self._log("звонок отклонён, группа удаляется")
@@ -1392,6 +1408,104 @@ class DialApp:
         if self._files_pending <= 0:
             self.clear_progress()
 
+    # ---------- скачивание файлов из чата звонка ----------
+
+    def _download_files(self):
+        if not self.hub.chat_id:
+            return
+        self.set_progress("Загрузка списка файлов...", indeterminate=True)
+        self.do_cmd({"cmd": "list_files", "chat_id": self.hub.chat_id},
+                    on_done=self._show_files_dialog)
+
+    def _show_files_dialog(self, resp):
+        self.clear_progress()
+        if resp.get("error"):
+            self._log("список файлов: " + resp["error"])
+            self.status_var.set("Ошибка: " + resp["error"])
+            return
+        files = resp.get("files") or []
+        if not files:
+            messagebox.showinfo("Dial Forward", "В чате звонка пока нет файлов")
+            return
+        win = tk.Toplevel(self.root)
+        win.title("Скачать файлы")
+        win.transient(self.root)
+        win.grab_set()
+        wrap = ttk.Frame(win, padding=8)
+        wrap.pack(fill="both", expand=True)
+        ttk.Label(wrap, text="Выберите файлы из чата звонка:").pack(
+            anchor="w", pady=(0, 4))
+        frame = ttk.Frame(wrap)
+        frame.pack(fill="both", expand=True)
+        sb = ttk.Scrollbar(frame, orient="vertical")
+        lb = tk.Listbox(frame, height=14, width=74, selectmode="extended",
+                        yscrollcommand=sb.set, activestyle="dotbox")
+        sb.config(command=lb.yview)
+        lb.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        view = []
+        for f in files:
+            size = f.get("size") or 0
+            if size >= 1 << 20:
+                sz = f"{size / (1 << 20):.1f} МБ"
+            else:
+                sz = f"{max(1, size // 1024)} КБ"
+            lb.insert("end", f"{f['name']}   [{sz}]")
+            view.append(f)
+        btns = ttk.Frame(wrap)
+        btns.pack(fill="x", pady=(8, 0))
+
+        def do_download():
+            sel = lb.curselection()
+            if not sel:
+                messagebox.showinfo("Dial Forward", "Выберите файлы", parent=win)
+                return
+            target = filedialog.askdirectory(parent=win, title="Куда сохранить файлы")
+            if not target:
+                return
+            picked = [view[i] for i in sel]
+            win.destroy()
+            self._download_picked(picked, target)
+
+        def do_all():
+            target = filedialog.askdirectory(parent=win, title="Куда сохранить файлы")
+            if not target:
+                return
+            win.destroy()
+            self._download_picked(list(files), target)
+
+        ttk.Button(btns, text="Скачать выбранные",
+                   command=do_download).pack(side="left", padx=4)
+        ttk.Button(btns, text="Скачать все", command=do_all).pack(side="left", padx=4)
+        ttk.Button(btns, text="Отмена", command=win.destroy).pack(side="right", padx=4)
+        win.wait_window()
+
+    def _download_picked(self, files, target):
+        self._dl_pending = len(files)
+        self._dl_errors = 0
+        self.set_progress("Скачивание...", indeterminate=True)
+        for f in files:
+            self.do_cmd({"cmd": "get_file", "chat_id": self.hub.chat_id,
+                         "msg_id": f["msg_id"], "target_dir": target},
+                        on_done=lambda r, f=f: self._file_downloaded(f, r))
+
+    def _file_downloaded(self, f, resp):
+        name = f.get("name") or f.get("msg_id")
+        if resp.get("ok"):
+            got = resp.get("name") or name
+            size = resp.get("size") or 0
+            self._log(f"файл скачан: {got} ({size} байт)")
+        else:
+            self._dl_errors += 1
+            self._log(f"не удалось скачать {name}: {resp.get('error')}")
+        self._dl_pending -= 1
+        if self._dl_pending <= 0:
+            self.clear_progress()
+            if self._dl_errors:
+                self.status_var.set(
+                    f"Скачано с ошибками ({self._dl_errors}) — см. логи")
+            self._dl_errors = 0
+
     # ---------- ответы и события ----------
 
     def _poll(self):
@@ -1412,8 +1526,8 @@ class DialApp:
             _, cmd, resp, log_reply, on_done = item
             self._on_resp(cmd, resp, log_reply, on_done)
         elif kind == "incoming":
-            _, chat_id, payload = item
-            self._on_incoming(chat_id, payload)
+            _, chat_id, payload, from_id, from_name = item
+            self._on_incoming(chat_id, payload, from_id, from_name)
         elif kind == "signal":
             _, chat_id, payload = item
             if self.hub.session and self.hub.chat_id == chat_id:
@@ -1441,6 +1555,16 @@ class DialApp:
             self.update_progress(current, total)
             if current >= total - 1:
                 self.clear_progress()
+        elif kind == "dlfile":
+            _, msg = item
+            total = msg.get("total") or 0
+            current = msg.get("current") or 0
+            name = msg.get("name") or ""
+            if total > 0:
+                self.set_progress(f"Скачивание: {name}", maximum=total)
+                self.update_progress(current, total)
+                if current >= total - 1:
+                    self.clear_progress()
         elif kind == "dialog_progress":
             _, msg = item
             total = msg.get("total") or 0
@@ -1521,22 +1645,38 @@ class DialApp:
             except Exception as e:
                 log(f"[app] on_done: {e!r}")
 
-    def _on_incoming(self, chat_id, payload):
+    def _on_incoming(self, chat_id, payload, from_id=None, from_name=None):
         if self.in_call:
             log(f"[app] уже в звонке — игнорирую офер {chat_id}")
             return
         if self.incoming and self.incoming[0] == chat_id:
             log(f"[app] дубликат входящего {chat_id} — игнорирую")
             return
-        self.incoming = (chat_id, payload)
+        self.incoming = (chat_id, payload, from_id, from_name)
         t = payload.get("type")
         log(f"[app] входящий звонок (chat {chat_id}, type={t})")
         self._log("входящий звонок" + (" (групповой)" if t == "ring" else ""))
-        self.inc_title.set(payload.get("title") or "Входящий звонок")
+        title = payload.get("title") or ""
+        if not title:
+            from_name = from_name or "" or self._caller_name(from_id) or ""
+            if from_name:
+                title = f"Входящий звонок: {from_name}"
+        self.inc_title.set(title or "Входящий звонок")
         self._go("incoming")
         self._show_window()
         if self.auto_answer:
             self.root.after(300, self._answer_incoming)
+
+    def _caller_name(self, user_id):
+        """Имя звонящего из списка контактов (если relay имя не дал)."""
+        if user_id is None:
+            return ""
+        for d in self.contacts:
+            if d.get("type") == "user" and d.get("id") == user_id:
+                n = (d.get("first_name") or "").strip() \
+                    or (d.get("username") or "").strip()
+                return n or ""
+        return ""
 
     # ---------- автозвонок (--call) ----------
 
@@ -1783,6 +1923,8 @@ def main():
         pct = int(100 * done // total)
         splash.set_progress_from_thread(
             pct, f"Импорт библиотек (сканирование) — {pct}%")
+        if pct >= 100:
+            splash.set_indeterminate_from_thread("Подготовка...")
 
     setup_plugin_import(on_progress=_import_progress)
 

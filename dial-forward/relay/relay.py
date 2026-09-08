@@ -485,10 +485,25 @@ class Relay:
         chat_id = (getattr(pid, "chat_id", None) or getattr(pid, "channel_id", None)
                    or getattr(pid, "user_id", None))
         from_id = getattr(msg.from_id, "user_id", None) if msg.from_id else None
+        from_name = ""
+        try:
+            sender = getattr(event, "_sender", None)
+            if sender is None:
+                sender = await event.get_sender()
+            if sender is not None:
+                from_name = (getattr(sender, "first_name", "") or ""
+                             or getattr(sender, "username", "") or "")
+                if not from_name:
+                    from_name = getattr(sender, "title", "") or ""
+        except Exception:
+            pass
+        if not from_name:
+            from_name = str(from_id or "")
         await self.broadcast({
             "event": "message",
             "chat_id": chat_id,
             "from_id": from_id,
+            "from_name": from_name,
             "msg_id": msg.id,
             "text": msg.message,
         })
@@ -852,6 +867,66 @@ class Relay:
         await self.client.send_file(chat_id, path, progress_callback=progress_cb)
         return {"name": name}
 
+    async def list_files(self, chat_id):
+        """Список файлов в чате звонка (документы, фото, голосовые)."""
+        if not self.client or not chat_id:
+            return {"error": "нет чата для скачивания"}
+        try:
+            entity = await self.client.get_entity(int(chat_id))
+        except Exception as e:
+            return {"error": f"чат не найден: {e}"}
+        out = []
+        try:
+            async for m in self.client.iter_messages(entity, limit=300):
+                f = getattr(m, "file", None)
+                if not f:
+                    continue
+                name = (getattr(f, "name", None) or "").strip() or f"file_{m.id}"
+                out.append({
+                    "msg_id": m.id,
+                    "name": name,
+                    "size": getattr(f, "size", 0) or 0,
+                    "date": getattr(m.date, "timestamp", 0),
+                })
+        except Exception as e:
+            return {"error": f"не удалось получить список файлов: {e}"}
+        out.sort(key=lambda x: x["msg_id"], reverse=True)
+        return {"files": out}
+
+    async def get_file(self, chat_id, msg_id, target_dir):
+        """Скачивает файл из чата звонка в target_dir (с прогрессом)."""
+        if not self.client or not chat_id:
+            return {"error": "нет чата для скачивания"}
+        try:
+            entity = await self.client.get_entity(int(chat_id))
+            msg = await self.client.get_messages(entity, ids=int(msg_id))
+        except Exception as e:
+            return {"error": f"сообщение не найдено: {e}"}
+        if not msg or not getattr(msg, "media", None):
+            return {"error": "сообщение с файлом не найдено"}
+        name = (getattr(msg.file, "name", None) or "").strip() or f"file_{int(msg_id)}"
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+        except OSError as e:
+            return {"error": f"не могу создать каталог: {e}"}
+        dest = os.path.join(target_dir, name)
+        try:
+            if os.path.exists(dest):
+                os.unlink(dest)
+
+            def progress_cb(current, total):
+                asyncio.ensure_future(self.broadcast({
+                    "event": "dlfile", "chat_id": chat_id, "msg_id": int(msg_id),
+                    "name": name, "current": current, "total": total}))
+
+            path = await self.client.download_media(
+                msg, file=dest, progress_callback=progress_cb)
+        except Exception as e:
+            return {"error": f"скачивание не удалось: {e}"}
+        if not path or not os.path.isfile(path):
+            return {"error": "файл не сохранён"}
+        return {"name": name, "size": os.path.getsize(path)}
+
     async def check_group(self, user_ids):
         """Можно ли добавить пользователя в группу: нужен username или контакт."""
         result = {}
@@ -904,6 +979,10 @@ class Relay:
             "leave": lambda: self.leave(data.get("chat_id", 0)),
             "send": lambda: self.send(data.get("chat_id", 0), data.get("text", "")),
             "send_file": lambda: self.send_file(data.get("chat_id", 0), data.get("path", "")),
+            "list_files": lambda: self.list_files(data.get("chat_id", 0)),
+            "get_file": lambda: self.get_file(data.get("chat_id", 0),
+                                              data.get("msg_id", 0),
+                                              data.get("target_dir", "")),
             "check_group": lambda: self.check_group(data.get("user_ids", [])),
         }
         fn = handlers.get(cmd)
