@@ -49,7 +49,12 @@ def _here_dir():
 
 
 def _res(*parts):
-    return os.path.join(_here_dir(), *parts)
+    p = os.path.join(_here_dir(), *parts)
+    if not os.path.exists(p) and not getattr(sys, "frozen", False):
+        alt = os.path.join(APP_ROOT, *parts)
+        if os.path.exists(alt):
+            return alt
+    return p
 
 
 class _Splash:
@@ -209,8 +214,35 @@ def notify_running_app():
         pass
 
 
+_APP_LOG_PATH = None
+
+
+def _app_log_path():
+    global _APP_LOG_PATH
+    if _APP_LOG_PATH is not None:
+        return _APP_LOG_PATH
+    try:
+        if getattr(sys, "frozen", False):
+            base = os.environ.get("APPDATA") \
+                or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+            d = os.path.join(base, "DialForward")
+        else:
+            d = os.path.dirname(os.path.abspath(__file__))
+        os.makedirs(d, exist_ok=True)
+        _APP_LOG_PATH = os.path.join(d, "app.log")
+    except OSError:
+        _APP_LOG_PATH = os.devnull
+    return _APP_LOG_PATH
+
+
 def log(msg):
     print(msg, flush=True)
+    try:
+        with open(_app_log_path(), "a", encoding="utf-8",
+                  errors="replace") as f:
+            f.write(time.strftime("%H:%M:%S ") + str(msg) + "\n")
+    except Exception:
+        pass
 
 
 class CallHub:
@@ -433,28 +465,46 @@ class DialApp:
 
     def _init_tray(self):
         """Трей-иконка (pystray): при закрытии окно полностью скрывается,
-        приложение продолжает принимать входящие звонки."""
+        приложение продолжает принимать входящие звонки.
+
+        Иконку создаём и запускаем в одном фоновом потоке: бэкенд
+        appindicator привязывает объект индикатора к GLib-mainloop потока —
+        если создать иконку в главном потоке, а run() вызывать в другом,
+        индикатор молча не появляется (как на Linux/KDE, X11)."""
         try:
             import pystray
             from PIL import Image
         except ImportError:
-            self.tray = None
+            self._tray_icon = None
             log("[app] трей недоступен (нет pystray/PIL) — окно сворачивается")
             return
-        base = _res("icons")
-        path = os.path.join(base, "dial_forward.png")
+        path = os.path.join(_res("icons"), "dial_forward.png")
         if not os.path.isfile(path):
-            self.tray = None
+            self._tray_icon = None
             log("[app] трей недоступен (нет иконки)")
             return
-        image = Image.open(path)
-        menu = pystray.Menu(
-            pystray.MenuItem("Показать", lambda icon, item: self._show_window(),
-                             default=True),
-            pystray.MenuItem("Выйти", lambda icon, item: self._quit()),
-        )
-        self.tray = pystray.Icon("dial-forward", image, "Dial Forward", menu)
-        threading.Thread(target=self.tray.run, daemon=True).start()
+        self._tray_icon = None
+
+        def _run():
+            try:
+                image = Image.open(path).convert("RGBA")
+                menu = pystray.Menu(
+                    pystray.MenuItem("Показать",
+                                     lambda icon, item: self._show_window(),
+                                     default=True),
+                    pystray.MenuItem("Выйти", lambda icon, item: self._quit()),
+                )
+                self._tray_icon = pystray.Icon("dial-forward", image,
+                                               "Dial Forward", menu)
+                self._tray_icon.run()
+            except Exception as e:
+                log(f"[app] трей не запустился: {e!r}")
+                try:
+                    self._tray_icon = None
+                except Exception:
+                    pass
+
+        threading.Thread(target=_run, daemon=True).start()
         log("[app] трей готов")
 
     # ---------- UI ----------
@@ -744,9 +794,9 @@ class DialApp:
     def _quit(self):
         if self.in_call:
             self.hub.end_call("выход")
-        if getattr(self, "tray", None) is not None:
+        if getattr(self, "_tray_icon", None) is not None:
             try:
-                self.tray.stop()
+                self._tray_icon.stop()
             except Exception:
                 pass
         self.root.destroy()
@@ -980,9 +1030,9 @@ class DialApp:
         if messagebox.askyesno("Обновление",
                                "Обновление установлено. Перезапустить приложение?"):
             self.restart_code = RESTART_CODE
-            if getattr(self, "tray", None) is not None:
+            if getattr(self, "_tray_icon", None) is not None:
                 try:
-                    self.tray.stop()
+                    self._tray_icon.stop()
                 except Exception:
                     pass
             self.root.destroy()
