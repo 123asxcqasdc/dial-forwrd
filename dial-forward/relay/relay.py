@@ -716,7 +716,8 @@ class Relay:
         except Exception as e:
             log.warning("проверка/добавление участника: %s", e)
             await self.cleanup_group(chat_id)
-            return {"error": "не удалось добавить участника — группа удалена"}
+            return {"error": "не удалось добавить участника — группа удалена",
+                    "add_error": True}
         self.calls[user.id] = chat_id
         return {"chat_id": chat_id, "user_id": user.id}
 
@@ -734,7 +735,8 @@ class Relay:
             updates = await self.client(functions.messages.CreateChatRequest(
                 users=users, title=title))
         except Exception as e:
-            return {"error": f"не удалось создать группу: {e}"}
+            return {"error": f"не удалось создать группу: {e}",
+                    "add_error": True}
         chat_id = None
         updates_obj = getattr(updates, "updates", None) or updates
         for u in getattr(updates_obj, "updates", []):
@@ -762,7 +764,8 @@ class Relay:
         except Exception as e:
             log.warning("call_group: добавление участников: %s", e)
             await self.cleanup_group(chat_id)
-            return {"error": "не удалось добавить участника — группа удалена"}
+            return {"error": "не удалось добавить участника — группа удалена",
+                    "add_error": True}
         for u in users:
             self.calls[u.id] = chat_id
         return {"chat_id": chat_id, "user_id": [u.id for u in users]}
@@ -776,7 +779,8 @@ class Relay:
         except Exception as e:
             log.warning("invite: %s: %s", username, e)
             await self.cleanup_group(chat_id)
-            return {"error": "не удалось пригласить участника — группа удалена"}
+            return {"error": "не удалось пригласить участника — группа удалена",
+                    "add_error": True}
         return {"user_id": user.id}
 
     async def chat_info(self, chat_id):

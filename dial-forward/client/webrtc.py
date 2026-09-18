@@ -272,20 +272,60 @@ class WebRtcPeer:
         res = Gst.ElementFactory.make("audioresample", "ares")
         enc = Gst.ElementFactory.make("opusenc", "enc")
         pay = Gst.ElementFactory.make("rtpopuspay", "pay")
-        for e in (src, conv, res, enc, pay):
-            pipeline.add(e)
-        src.link(conv)
-        conv.link(res)
-        res.link(enc)
-        enc.link(pay)
 
         dec = Gst.ElementFactory.make("rtpopusdepay", "depay")
         opus = Gst.ElementFactory.make("opusdec", "dec")
         sink = Gst.ElementFactory.make(self.audio_sink or "autoaudiosink", "asink")
+
+        # Подавление эха: webrtcdsp (AEC/NS/AGC) в тракте записи, а webrtcechoprobe
+        # в тракте воспроизведения подаёт в него референс — то, что реально
+        # звучит из динамиков. Без референса AEC не работает.
+        dsp = Gst.ElementFactory.make("webrtcdsp", "dsp")
+        probe = Gst.ElementFactory.make("webrtcechoprobe", "echoprobe")
+        echo_ok = dsp is not None and probe is not None
+        if echo_ok:
+            caps_aec = Gst.Caps.from_string(
+                "audio/x-raw,format=(string)S16LE,layout=(string)interleaved,"
+                "rate=(int)48000,channels=(int)1")
+            cap_dsp = Gst.ElementFactory.make("capsfilter", "aec_caps")
+            cap_dsp.set_property("caps", caps_aec)
+            conv2 = Gst.ElementFactory.make("audioconvert", "aconv_dsp")
+            cap_ref = Gst.ElementFactory.make("capsfilter", "ref_caps")
+            cap_ref.set_property("caps", caps_aec)
+            conv3 = Gst.ElementFactory.make("audioconvert", "aconv_ref")
+            res2 = Gst.ElementFactory.make("audioresample", "ares_ref")
+
+        for e in (src, conv, res, enc, pay):
+            pipeline.add(e)
+        if echo_ok:
+            for e in (cap_dsp, dsp, conv2):
+                pipeline.add(e)
+        src.link(conv)
+        conv.link(res)
+        if echo_ok:
+            res.link(cap_dsp)
+            cap_dsp.link(dsp)
+            dsp.link(conv2)
+            conv2.link(enc)
+            dsp.set_property("probe", "echoprobe")
+        else:
+            res.link(enc)
+        enc.link(pay)
+
         for e in (dec, opus, sink):
             pipeline.add(e)
-        dec.link(opus)
-        opus.link(sink)
+        if echo_ok:
+            for e in (conv3, res2, cap_ref, probe):
+                pipeline.add(e)
+            dec.link(opus)
+            opus.link(conv3)
+            conv3.link(res2)
+            res2.link(cap_ref)
+            cap_ref.link(probe)
+            probe.link(sink)
+        else:
+            dec.link(opus)
+            opus.link(sink)
 
         def on_pad_added(el, pad):
             caps = pad.get_current_caps()

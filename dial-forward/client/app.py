@@ -1295,6 +1295,11 @@ class DialApp:
         def done(resp):
             self.clear_progress()
             if resp.get("error"):
+                if resp.get("add_error"):
+                    messagebox.showwarning(
+                        "Dial Forward",
+                        "Пожалуйста, не пробуйте ещё раз — повторные действия "
+                        "могут привести к блокировке сессии/аккаунта")
                 self.status_var.set("Ошибка: " + resp["error"])
                 self._log("ошибка звонка: " + resp["error"])
                 return
@@ -1441,9 +1446,20 @@ class DialApp:
         self._log(f"приглашаю @{uname.lstrip('@')}...")
         self.set_progress("Приглашаю...", indeterminate=True)
         self.do_cmd({"cmd": "invite", "chat_id": self.hub.chat_id, "username": uname},
-                    on_done=lambda r: (self.clear_progress(), self._log(
-                        "приглашён, ждём подключения"
-                        if r.get("ok") else f"не удалось: {r.get('error')}")))
+                    on_done=lambda r: (self.clear_progress(),
+                                       self._invite_done(r)))
+
+    def _invite_done(self, r):
+        if r.get("error"):
+            if r.get("add_error"):
+                messagebox.showwarning(
+                    "Dial Forward",
+                    "Пожалуйста, не пробуйте ещё раз — повторные действия "
+                    "могут привести к блокировке сессии/аккаунта")
+            self._log(f"не удалось пригласить: {r.get('error')}")
+            self.status_var.set(f"Ошибка: {r.get('error')}")
+        else:
+            self._log("приглашён, ждём подключения")
 
     def _send_files(self):
         if not self.hub.chat_id:
