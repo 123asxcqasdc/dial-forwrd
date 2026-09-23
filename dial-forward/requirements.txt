@@ -5,3 +5,4 @@ pillow>=10
 pygobject>=3.48
 pystray>=0.19
 python-socks>=2.4.0
+cryptography>=42.0

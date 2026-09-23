@@ -29,6 +29,10 @@ for _n in ("stdout", "stderr"):
             pass
 
 from call import CallSession, capture_loop, run_async
+try:
+    from diag import send_logs as _diag_send_logs
+except Exception:
+    _diag_send_logs = None
 from relay_client import RelayClient
 from webrtc import WebRtcPeer, setup_plugin_import
 
@@ -408,6 +412,7 @@ class DialApp:
         self.in_call = False
         self._peer_connected = False
         self._conn_timer = None   # таймаут соединения звонка
+        self._diag_asked = False  # попап «передать логи» показан?
         self._files_pending = 0
         self.boot_call = auto_call
         self.auto_answer = auto_answer
@@ -1367,6 +1372,7 @@ class DialApp:
 
     def _start_conn_timer(self):
         self._peer_connected = False
+        self._diag_asked = False
         self._cancel_conn_timer()
         self._conn_timer = self.root.after(45000, self._conn_timeout)
 
@@ -1377,6 +1383,38 @@ class DialApp:
             except Exception:
                 pass
             self._conn_timer = None
+
+    # ---------- передача логов разработчику ----------
+
+    def _maybe_offer_diag(self, reason):
+        if self._diag_asked or _diag_send_logs is None:
+            return
+        self._diag_asked = True
+        if not messagebox.askyesno(
+                "Dial Forward",
+                "Передать логи разработчикам для устранения возникшей проблемы?"):
+            return
+        self._log("передаю логи разработчику...")
+        threading.Thread(target=self._send_diag, args=(reason,),
+                         daemon=True).start()
+
+    def _send_diag(self, reason):
+        ok, result = _diag_send_logs(reason)
+        try:
+            self.root.after(0, lambda: self._diag_done(ok, result))
+        except Exception:
+            pass
+
+    def _diag_done(self, ok, result):
+        if ok:
+            self._log(f"логи переданы: {result}")
+            messagebox.showinfo("Dial Forward",
+                                "Логи переданы разработчику.\nСпасибо.")
+        else:
+            self._log(f"не удалось передать логи: {result}")
+            messagebox.showerror(
+                "Dial Forward",
+                "Не удалось передать логи.\n" + str(result))
 
     def _conn_timeout(self):
         self._conn_timer = None
@@ -1597,6 +1635,7 @@ class DialApp:
             elif state == "failed":
                 self._cancel_conn_timer()
                 self._log("соединение не удалось")
+                self._maybe_offer_diag("соединение не удалось")
         elif kind == "peer_error":
             _, msg = item
             self._log("медиа: " + msg)

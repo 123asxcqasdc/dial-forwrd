@@ -64,7 +64,7 @@ shared_datas = gst_datas + [
 shared_bins = gst_bins
 
 # --- app module roots (client/ modules imported by app.py) ---------
-app_hidden = ["call", "protocol", "relay_client", "webrtc"]
+app_hidden = ["call", "diag", "protocol", "relay_client", "webrtc"]
 # gi / gstreamer python submodules
 gst_hidden = []
 for _p in ("gstreamer_python", "gstreamer_libs", "gstreamer_plugins"):
