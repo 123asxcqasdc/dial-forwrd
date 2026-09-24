@@ -889,8 +889,9 @@ class DialApp:
             self._msi_worker()
             return
         wanted = list(UPDATE_FILES) + ["VERSION"]
+        total_files = len(wanted)
         ok = True
-        for rel in wanted:
+        for i, rel in enumerate(wanted):
             data = None
             for base in UPDATE_BASES:
                 try:
@@ -914,6 +915,10 @@ class DialApp:
                 log(f"[update] не записать {rel}: {e!r}")
                 ok = False
                 break
+            try:
+                self.resp_q.put(("updprogress", i + 1, total_files, rel))
+            except Exception:
+                pass
         self.resp_q.put(("update_done" if ok else "update_fail", None))
 
     def _msi_worker(self):
@@ -1677,6 +1682,12 @@ class DialApp:
             _, done, total = item
             if not self.progress_var.get():
                 self.set_progress("Загрузка DialForward.msi...", maximum=total)
+            self.update_progress(done, total)
+        elif kind == "updprogress":
+            _, done, total, rel = item
+            if not self.progress_var.get():
+                self.set_progress("Обновление...", maximum=total)
+            self.progress_var.set(f"Обновление: {done}/{total} — {rel}")
             self.update_progress(done, total)
         elif kind == "msi_ready":
             _, msi = item
