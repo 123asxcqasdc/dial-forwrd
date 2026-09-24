@@ -173,12 +173,12 @@ class _Splash:
 
 
 UPDATE_BASES = [
-    "https://uliigra2.c6t.ru/dial-forward/",
-    "https://raw.githubusercontent.com/123asxcqasdc/uliigra2/main/dial-forward/",
+    "https://raw.githubusercontent.com/123asxcqasdc/dial-forwrd/main/dial-forward/",
+    "https://cdn.jsdelivr.net/gh/123asxcqasdc/dial-forwrd@main/dial-forward/",
 ]
 UPDATE_FILES = [
-    "client/app.py", "client/call.py", "client/protocol.py",
-    "client/relay_client.py", "client/webrtc.py",
+    "client/app.py", "client/call.py", "client/diag.py",
+    "client/protocol.py", "client/relay_client.py", "client/webrtc.py",
     "relay/relay.py", "launcher.py",
 ]
 UPD_CHECK_INTERVAL = 3 * 3600   # фоновая проверка каждые 3 часа
