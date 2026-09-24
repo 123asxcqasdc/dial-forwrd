@@ -33,13 +33,15 @@ class RelayClient:
                     raw = await asyncio.wait_for(ws.recv(), 40)
                     msg = json.loads(raw)
                     if "event" in msg:
-                        self._dispatch(msg)
-                    else:
-                        print(f"[{_ts()}][relay_client] cmd({c}) -> "
-                              f"{'ok' if msg.get('ok') else 'FAIL ' + str(msg.get('error'))} "
-                              f"за {(time.monotonic() - t0) * 1000:.0f} мс",
-                              flush=True)
-                        return msg
+                        # события приходят только на listen-канал; на командном
+                        # сокете их быть не должно. Игнорируем (защита от
+                        # многократной доставки при старом relay).
+                        continue
+                    print(f"[{_ts()}][relay_client] cmd({c}) -> "
+                          f"{'ok' if msg.get('ok') else 'FAIL ' + str(msg.get('error'))} "
+                          f"за {(time.monotonic() - t0) * 1000:.0f} мс",
+                          flush=True)
+                    return msg
         except Exception as e:
             print(f"[{_ts()}][relay_client] cmd({c}): {type(e).__name__}: {e}",
                   flush=True)
@@ -73,6 +75,10 @@ class RelayClient:
                                               open_timeout=5,
                                               ping_interval=20) as ws:
                     attempt = 0
+                    try:
+                        await ws.send(json.dumps({"cmd": "__listen__"}))
+                    except Exception:
+                        pass
                     if self.on_ws_state:
                         self.on_ws_state(True)
                     if attempt:

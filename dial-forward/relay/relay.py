@@ -1011,32 +1011,58 @@ class Relay:
 
 
 async def ws_handler(relay: Relay, ws):
-    relay.clients.add(ws)
     peer = getattr(ws, "remote_address", None)
-    log.info("gui connected %s (клиентов: %d)", peer, len(relay.clients))
-    await relay._push_conn_state(force=True)
+    # Первое сообщение: команда или маркер постоянного listen-канала.
+    # Молчащие соединения (ещё не приславшие ничего и ждущие событий)
+    # получаем отдельно — спортивный интерес для старых клиентов.
     try:
-        async for raw in ws:
-            try:
-                req = json.loads(raw)
-            except json.JSONDecodeError:
-                await ws.send(json.dumps({"ok": False, "error": "bad json"}))
-                continue
-            cmd = req.get("cmd", "")
-            t0 = time.monotonic()
-            resp = await relay.handle_cmd(cmd, req)
-            dt = (time.monotonic() - t0) * 1000
-            if resp.get("ok"):
-                log.info("cmd %s -> ok (%.0f ms)", cmd, dt)
-            else:
-                log.warning("cmd %s -> FAIL %s (%.0f ms)",
-                            cmd, resp.get("error"), dt)
-            await ws.send(json.dumps(resp))
-    except websockets.exceptions.ConnectionClosed as e:
-        log.info("gui %s connection closed: %s", peer, e)
-    finally:
-        relay.clients.discard(ws)
-        log.info("gui disconnected %s (клиентов: %d)", peer, len(relay.clients))
+        first = await asyncio.wait_for(ws.recv(), timeout=3)
+        try:
+            req0 = json.loads(first)
+        except json.JSONDecodeError:
+            req0 = None
+    except asyncio.TimeoutError:
+        req0 = None  # клиент ничего не слал — это событийный канал
+    except websockets.exceptions.ConnectionClosed:
+        return
+    if req0 is None or req0.get("cmd") == "__listen__":
+        # ---- событийный канал: получает broadcast ----
+        relay.clients.add(ws)
+        log.info("gui listener %s (клиентов: %d)", peer, len(relay.clients))
+        await relay._push_conn_state(force=True)
+        try:
+            async for raw in ws:
+                pass
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        except Exception:
+            pass
+        finally:
+            relay.clients.discard(ws)
+            log.info("gui listener %s закрыт (клиентов: %d)", peer,
+                     len(relay.clients))
+        return
+
+    # ---- командный канал: в clients не попадает, события не получает ----
+    try:
+        cmd = req0.get("cmd", "")
+        t0 = time.monotonic()
+        resp = await relay.handle_cmd(cmd, req0)
+        dt = (time.monotonic() - t0) * 1000
+        if resp.get("ok"):
+            log.info("cmd %s -> ok (%.0f ms)", cmd, dt)
+        else:
+            log.warning("cmd %s -> FAIL %s (%.0f ms)",
+                        cmd, resp.get("error"), dt)
+        await ws.send(json.dumps(resp))
+    except websockets.exceptions.ConnectionClosed:
+        pass
+    except Exception as e:
+        log.warning("cmd handler error: %s", e)
+        try:
+            await ws.send(json.dumps({"ok": False, "error": str(e)}))
+        except Exception:
+            pass
 
 
 async def main():

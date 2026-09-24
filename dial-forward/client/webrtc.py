@@ -11,6 +11,7 @@ on_ice_candidate, on_connection_state) вызываются в GLib-потоке
 import threading
 import os
 import sys
+import time
 
 import gi
 gi.require_version('Gst', '1.0')
@@ -19,6 +20,23 @@ gi.require_version('GstSdp', '1.0')
 from gi.repository import Gst, GstWebRTC, GstSdp, GLib
 
 Gst.init(None)
+
+
+def _wlog(msg):
+    """Пишет и в stdout, и в тот же app.log, что и клиент (frozen: APPDATA)."""
+    print(msg, flush=True)
+    try:
+        if getattr(sys, "frozen", False):
+            base = os.environ.get("APPDATA") \
+                or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+            d = os.path.join(base, "DialForward")
+        else:
+            d = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(d, "app.log"), "a", encoding="utf-8",
+                  errors="replace") as f:
+            f.write(time.strftime("%H:%M:%S ") + str(msg) + "\n")
+    except Exception:
+        pass
 
 
 def _bundled_plugin_dirs():
@@ -217,7 +235,7 @@ class WebRtcPeer:
             import traceback
             traceback.print_exc()
             self._build_error = f"{e!r}"
-            print(f"[{self.name}] СБОЙ СБОРКИ: {e!r}", flush=True)
+            _wlog(f"[{self.name}] СБОЙ СБОРКИ: {e!r}")
             if self.on_build_error:
                 try:
                     self.on_build_error(f"{e!r}")
@@ -364,7 +382,7 @@ class WebRtcPeer:
         if msg.type in (Gst.MessageType.ERROR, Gst.MessageType.WARNING):
             err, dbg = msg.parse_error() if msg.type == Gst.MessageType.ERROR else msg.parse_warning()
             text = f"{err.message}"
-            print(f"[{self.name}] GStreamer {msg.type}: {text}", flush=True)
+            _wlog(f"[{self.name}] GStreamer {msg.type}: {text}")
             if dbg:
                 print(f"  debug: {dbg[:300]}", flush=True)
             if self.on_gst_error and msg.type == Gst.MessageType.ERROR:
@@ -402,12 +420,12 @@ class WebRtcPeer:
         state = element.get_property("ice-connection-state")
         nick = GstWebRTC.WebRTCICEConnectionState(state).value_nick
         self.ice_state = nick
-        print(f"[{self.name}] ice-connection-state: {nick}", flush=True)
+        _wlog(f"[{self.name}] ice-connection-state: {nick}")
         if self.on_connection_state:
             self.on_connection_state(nick)
 
     def _on_ice_candidate(self, webrtc, mlineindex, candidate):
-        print(f"[{self.name}] local ICE: {candidate[:60]}", flush=True)
+        _wlog(f"[{self.name}] local ICE: {candidate[:60]}")
         if self.on_ice_candidate:
             self.on_ice_candidate(candidate)
 
@@ -425,7 +443,7 @@ class WebRtcPeer:
 
     def _wait_caps_then_negotiate(self, attempts=50):
         if self._pay_caps_ok():
-            print(f"[{self.name}] caps готовы", flush=True)
+            _wlog(f"[{self.name}] caps готовы")
             self._negotiating = False
             self.runner.idle(self._negotiate_now)
             return
@@ -439,7 +457,7 @@ class WebRtcPeer:
     def _negotiate_now(self):
         if self._negotiating:
             self._renegotiate_pending = True
-            print(f"[{self.name}] negotiate занят — отложено", flush=True)
+            _wlog(f"[{self.name}] negotiate занят — отложено")
             return
         self._negotiating = True
         promise = Gst.Promise.new_with_change_func(self._create_offer_cb, None, None)
@@ -504,14 +522,14 @@ class WebRtcPeer:
             self._held.append(desc)
             self._remote_type = sdp_type
             kind = "OFFER" if sdp_type == GstWebRTC.WebRTCSDPType.OFFER else "ANSWER"
-            print(f"[{self.name}] установлен удалённый {kind}: "
-                  f"{len(sdp_text)} b", flush=True)
+            _wlog(f"[{self.name}] установлен удалённый {kind}: "
+                  f"{len(sdp_text)} b")
             promise = Gst.Promise.new_with_change_func(self._remote_set_cb, None, None)
             self.webrtc.emit("set-remote-description", desc, promise)
         except Exception as e:
             import traceback
             traceback.print_exc()
-            print(f"[{self.name}] СБОЙ set_remote: {e!r}", flush=True)
+            _wlog(f"[{self.name}] СБОЙ set_remote: {e!r}")
 
     def _remote_set_cb(self, promise, user_data=None, *extra):
         try:
@@ -531,12 +549,12 @@ class WebRtcPeer:
                 self._negotiating = False
                 if self._renegotiate_pending:
                     self._renegotiate_pending = False
-                    print(f"[{self.name}] повторная ренегоциация", flush=True)
+                    _wlog(f"[{self.name}] повторная ренегоциация")
                     self._wait_caps_then_negotiate()
         except Exception as e:
             import traceback
             traceback.print_exc()
-            print(f"[{self.name}] СБОЙ remote_set_cb: {e!r}", flush=True)
+            _wlog(f"[{self.name}] СБОЙ remote_set_cb: {e!r}")
 
     def _create_answer_cb(self, promise, user_data=None, *extra):
         reply = promise.get_reply()
